@@ -22,7 +22,9 @@ Repository: https://github.com/ProTubeVR/ForceTubeVR-Unreal-Engine-Plugin<br>
 Version: [4.26](https://github.com/ProTubeVR/ForceTubeVR-Unreal-Engine-Plugin/tree/master/UE4%20Versions/4.26/ForceTubeVRForUE4) or other version compatible with UE4.27
 
 ## Licenses
-All assets except the ones listed below are only licensed for the use with Unreal Engine. Please make sure to read the [Unreal Engine EULA](https://www.unrealengine.com/en-US/eula).
+All assets except the ones listed below are only licensed for the use with Unreal Engine. Please make sure to read the [Unreal Engine EULA](https://www.unrealengine.com/en-US/eula). 
+
+The exceptions are:
 
 ### Low-Poly Sig MCX
 "Low-Poly Sig MCX" (https://skfb.ly/orGuy) by TastyTony is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).
