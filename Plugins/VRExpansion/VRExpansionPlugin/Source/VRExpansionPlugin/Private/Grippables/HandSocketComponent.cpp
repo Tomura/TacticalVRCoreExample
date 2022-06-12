@@ -23,7 +23,7 @@ UHandSocketComponent::UHandSocketComponent(const FObjectInitializer& ObjectIniti
 	bTickedPose = false;
 	bShowVisualizationMesh = true;
 	bMirrorVisualizationMesh = false;
-	MirroredScale = FVector(1.f, 1.f, -1.f);
+	bShowRangeVisualization = false;
 #endif
 
 	HandRelativePlacement = FTransform::Identity;
@@ -34,6 +34,7 @@ UHandSocketComponent::UHandSocketComponent(const FObjectInitializer& ObjectIniti
 	SlotPrefix = FName("VRGripP");
 	bUseCustomPoseDeltas = false;
 	HandTargetAnimation = nullptr;
+	MirroredScale = FVector(1.f, 1.f, -1.f);
 	bOnlySnapMesh = false;
 	bFlipForLeftHand = false;
 	bLeftHandDominant = false;
@@ -407,39 +408,37 @@ FTransform UHandSocketComponent::GetMeshRelativeTransform(bool bIsRightHand, boo
 {
 	// Optionally mirror for left hand
 
+	// Failsafe
+	if (!this->GetAttachParent())
+		return FTransform::Identity;
+
 	FTransform relTrans = this->GetRelativeTransform();
-	FTransform HandPlacement = GetHandRelativePlacement();
+	FTransform HandTrans = GetHandRelativePlacement();
+	FTransform ReturnTrans = FTransform::Identity;
 
-	if (this->IsUsingAbsoluteScale() /*&& !bDecoupleMeshPlacement*/)
+	// Fix the scale
+	if (!bUseParentScale && this->IsUsingAbsoluteScale() /*&& !bDecoupleMeshPlacement*/)
 	{
-		if (this->GetAttachParent())
-		{
-			relTrans.SetScale3D(FVector(1.0f) / this->GetAttachParent()->GetRelativeScale3D());
-			//HandPlacement.ScaleTranslation(this->GetAttachParent()->GetRelativeScale3D());
-		}
-	}
-
-	FTransform ReturnTrans = (HandPlacement * relTrans);
-
-	if ((bFlipForLeftHand && (bLeftHandDominant == bIsRightHand)))
-	{
-
-		MirrorHandTransform(ReturnTrans, relTrans);
-		/*if (!bOnlyFlipRotation)
-		{
-			ReturnTrans.SetTranslation(ReturnTrans.GetTranslation().MirrorByVector(GetMirrorVector()));
-		}
-
-		FRotationMatrix test(ReturnTrans.GetRotation().Rotator());
-		test.Mirror(GetAsEAxis(MirrorAxis), GetCrossAxis());
-		//test.Mirror(MirrorAxis, FlipAxis);
-		ReturnTrans.SetRotation(test.ToQuat());*/
-	}
-
-	if(!bUseParentScale /*&& !bDecoupleMeshPlacement*/)
-	{ 
+		FVector ParentScale = this->GetAttachParent()->GetComponentScale();
+		// Take parent scale out of our relative transform early
+		relTrans.ScaleTranslation(ParentScale);
+		ReturnTrans = HandTrans * relTrans;
+		// We add in the inverse of the parent scale to adjust the hand mesh
+		ReturnTrans.ScaleTranslation((FVector(1.0f) / ParentScale));
 		ReturnTrans.SetScale3D(FVector(1.0f));
 	}
+	else
+	{
+		ReturnTrans = HandTrans * relTrans;
+	}
+
+	// If we should mirror the transform, do it now that it is in our parent relative space
+	if ((bFlipForLeftHand && (bLeftHandDominant == bIsRightHand)))
+	{
+		//FTransform relTrans = this->GetRelativeTransform();
+		MirrorHandTransform(ReturnTrans, relTrans);
+	}
+
 
 	return ReturnTrans;
 }
@@ -464,59 +463,40 @@ void UHandSocketComponent::OnRegister()
 	AActor* MyOwner = GetOwner();
 	if (bShowVisualizationMesh && (MyOwner != nullptr) && !IsRunningCommandlet())
 	{
-		if (HandVisualizerComponent == nullptr)
+		if (HandVisualizerComponent == nullptr && bShowVisualizationMesh)
 		{
-			//HandVisualizerComponent = NewObject<USkeletalMeshComponent>(MyOwner, NAME_None, RF_Transactional | RF_TextExportTransient);
 			HandVisualizerComponent = NewObject<UPoseableMeshComponent>(MyOwner, NAME_None, RF_Transactional | RF_TextExportTransient);
-			if (HandVisualizerComponent)
+			HandVisualizerComponent->SetupAttachment(this);
+			HandVisualizerComponent->SetIsVisualizationComponent(true);
+			HandVisualizerComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+			HandVisualizerComponent->CastShadow = false;
+			HandVisualizerComponent->CreationMethod = CreationMethod;
+			//HandVisualizerComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			HandVisualizerComponent->SetComponentTickEnabled(false);
+			HandVisualizerComponent->SetHiddenInGame(true);
+			HandVisualizerComponent->RegisterComponentWithWorld(GetWorld());
+			//HandVisualizerComponent->SetUsingAbsoluteScale(true);
+		}
+		else if (!bShowVisualizationMesh && HandVisualizerComponent)
+		{
+			HideVisualizationMesh();
+		}
+
+		if (HandVisualizerComponent)
+		{
+			bTickedPose = false;
+
+			if (VisualizationMesh)
 			{
-				HandVisualizerComponent->SetupAttachment(this);
-				HandVisualizerComponent->SetIsVisualizationComponent(true);
-				HandVisualizerComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
-				HandVisualizerComponent->CastShadow = false;
-				HandVisualizerComponent->CreationMethod = CreationMethod;
-				//HandVisualizerComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-				HandVisualizerComponent->SetComponentTickEnabled(false);
-				HandVisualizerComponent->SetHiddenInGame(true);
-				HandVisualizerComponent->RegisterComponentWithWorld(GetWorld());
-				//HandVisualizerComponent->SetUsingAbsoluteScale(this->IsUsingAbsoluteScale());
-
-				if (VisualizationMesh)
+				HandVisualizerComponent->SetSkeletalMesh(VisualizationMesh);
+				if (HandPreviewMaterial)
 				{
-					HandVisualizerComponent->SetSkeletalMesh(VisualizationMesh);
-					if (HandPreviewMaterial)
-					{
-						HandVisualizerComponent->SetMaterial(0, HandPreviewMaterial);
-					}
+					HandVisualizerComponent->SetMaterial(0, HandPreviewMaterial);
 				}
-
-				if (USceneComponent* ParentAttach = this->GetAttachParent())
-				{
-					FTransform relTrans = this->GetRelativeTransform();
-					FTransform HandPlacement = GetHandRelativePlacement();
-
-					if (this->IsUsingAbsoluteScale())// && !bDecoupleMeshPlacement)
-					{
-						relTrans.SetScale3D(FVector(1.0f) / ParentAttach->GetRelativeScale3D());
-						//HandPlacement.ScaleTranslation(ParentAttach->GetRelativeScale3D());
-					}
-
-					FTransform ReturnTrans = (HandPlacement * relTrans);
-					if (bMirrorVisualizationMesh)//(bFlipForLeftHand && !bIsRightHand))
-					{					
-						MirrorHandTransform(ReturnTrans, relTrans);
-					}
-
-					if ((bLeftHandDominant && !bMirrorVisualizationMesh) || (!bLeftHandDominant && bMirrorVisualizationMesh))
-					{
-						ReturnTrans.SetScale3D(ReturnTrans.GetScale3D() * MirroredScale);
-					}
-
-					HandVisualizerComponent->SetRelativeTransform(ReturnTrans.GetRelativeTransform(relTrans)/*newRel*/);
-				}
-
-				PoseVisualizationToAnimation();
 			}
+
+			PositionVisualizationMesh();
+			PoseVisualizationToAnimation(true);
 		}
 	}
 
@@ -524,6 +504,47 @@ void UHandSocketComponent::OnRegister()
 
 	Super::OnRegister();
 }
+
+#if WITH_EDITORONLY_DATA
+
+void UHandSocketComponent::PositionVisualizationMesh()
+{
+	if (!HandVisualizerComponent)
+	{
+		return;
+	}
+
+	if (USceneComponent* ParentAttach = this->GetAttachParent())
+	{
+		FTransform relTrans = this->GetRelativeTransform();
+		FTransform HandPlacement = GetHandRelativePlacement();
+		FTransform ReturnTrans = (HandPlacement * relTrans);
+
+		if (bMirrorVisualizationMesh)//(bFlipForLeftHand && !bIsRightHand))
+		{
+			MirrorHandTransform(ReturnTrans, relTrans);
+		}
+
+		if ((bLeftHandDominant && !bMirrorVisualizationMesh) || (!bLeftHandDominant && bMirrorVisualizationMesh))
+		{
+			ReturnTrans.SetScale3D(ReturnTrans.GetScale3D() * MirroredScale);
+		}
+
+		HandVisualizerComponent->SetRelativeTransform(ReturnTrans.GetRelativeTransform(relTrans)/*newRel*/);
+	}
+}
+
+void UHandSocketComponent::HideVisualizationMesh()
+{
+	if (!bShowVisualizationMesh && HandVisualizerComponent)
+	{
+		HandVisualizerComponent->SetVisibility(false);
+		HandVisualizerComponent->DestroyComponent();
+		HandVisualizerComponent = nullptr;
+	}
+}
+
+#endif
 
 #if WITH_EDITORONLY_DATA
 void UHandSocketComponent::PoseVisualizationToAnimation(bool bForceRefresh)
@@ -595,7 +616,7 @@ void UHandSocketComponent::PoseVisualizationToAnimation(bool bForceRefresh)
 
 	}
 
-	if (HandVisualizerComponent && !bTickedPose)
+	if (HandVisualizerComponent && (!bTickedPose || bForceRefresh))
 	{
 		// Tick Pose first
 		if (HandVisualizerComponent->IsRegistered())
@@ -675,11 +696,20 @@ void UHandSocketComponent::PostEditChangeProperty(FPropertyChangedEvent& Propert
 			PropertyThatChanged->GetFName() == GET_MEMBER_NAME_CHECKED(UHandSocketComponent, VisualizationMesh)
 			)
 		{
+			PositionVisualizationMesh();
 			PoseVisualizationToAnimation(true);
 		}
 		else if (PropertyThatChanged->GetFName() == GET_MEMBER_NAME_CHECKED(UHandSocketComponent, CustomPoseDeltas))
 		{
 			PoseVisualizationToAnimation(true);
+		}
+		else if (PropertyThatChanged->GetFName() == GET_MEMBER_NAME_CHECKED(UHandSocketComponent, HandRelativePlacement))
+		{
+			PositionVisualizationMesh();
+		}
+		else if (PropertyThatChanged->GetFName() == GET_MEMBER_NAME_CHECKED(UHandSocketComponent, bShowVisualizationMesh))
+		{
+			HideVisualizationMesh();
 		}
 #endif
 	}

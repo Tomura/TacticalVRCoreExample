@@ -1190,6 +1190,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "GripMotionController")
 		bool HasGrippedObjects();
 
+	// Get the first active and valid grip (local and remote auth both, priority remote)
+	// Returns nullptr if there is none
+	UFUNCTION(BlueprintCallable, meta = (Keywords = "Grip", DisplayName = "GetFirstActiveGrip", ScriptName = "GetFirstActiveGrip"), Category = "GripMotionController")
+		bool K2_GetFirstActiveGrip(FBPActorGripInformation& FirstActiveGrip);
+		FBPActorGripInformation* GetFirstActiveGrip();
+
 	// Get list of all gripped objects grip info structures (local and normal both)
 	UFUNCTION(BlueprintCallable, Category = "GripMotionController")
 		void GetAllGrips(TArray<FBPActorGripInformation> &GripArray);
@@ -1278,6 +1284,8 @@ public:
 	bool GetPhysicsGripIndex(const FBPActorGripInformation & GripInfo, int & index);
 	FBPActorPhysicsHandleInformation * CreatePhysicsGrip(const FBPActorGripInformation & GripInfo);
 	bool DestroyPhysicsHandle(FBPActorPhysicsHandleInformation * HandleInfo);
+	bool PausePhysicsHandle(FBPActorPhysicsHandleInformation* HandleInfo);
+	bool UnPausePhysicsHandle(FBPActorGripInformation& GripInfo, FBPActorPhysicsHandleInformation* HandleInfo);
 	
 	// Gets the advanced physics handle settings
 	UFUNCTION(BlueprintCallable, Category = "GripMotionController|Custom", meta = (DisplayName = "GetPhysicsHandleSettings"))

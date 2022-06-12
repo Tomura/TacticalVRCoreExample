@@ -69,12 +69,14 @@
 			]
 		},
 		{
-			"Name": "ForceTubeVRForUE4",
-			"Enabled": true
-		},
-		{
 			"Name": "OpenXRExpansionPlugin",
-			"Enabled": true
+			"Enabled": true,
+			"SupportedTargetPlatforms": [
+				"Win64",
+				"Linux",
+				"Android",
+				"HoloLens"
+			]
 		},
 		{
 			"Name": "OpenVRExpansionPlugin",
@@ -82,7 +84,13 @@
 		},
 		{
 			"Name": "VRExpansionPlugin",
-			"Enabled": true
+			"Enabled": true,
+			"SupportedTargetPlatforms": [
+				"Win64",
+				"Linux",
+				"Android",
+				"HoloLens"
+			]
 		}
 	],
 	"TargetPlatforms": [

@@ -14,12 +14,9 @@ Included: Yes<br>
 Repository: https://github.com/mordentral/VRExpansionPlugin<br>
 Branch: [4.27-Locked](https://github.com/mordentral/VRExpansionPlugin/tree/4.27-Locked)<br>
 
-### Force Tube VR Unreal Engine Plugin
-Author: Protube VR<br>
-License: Unknown<br>
-Included: No<br>
-Repository: https://github.com/ProTubeVR/ForceTubeVR-Unreal-Engine-Plugin<br>
-Version: [4.26](https://github.com/ProTubeVR/ForceTubeVR-Unreal-Engine-Plugin/tree/master/UE4%20Versions/4.26/ForceTubeVRForUE4) or other version compatible with UE4.27
+### Note: ForceTubeVR
+Force Tube VR was removed from the dependencies. As a replacement a simple component class was created that can be used as a base class for a Blueprint that implements Gun Haptics.
+A simple example can be found in the wiki for the TacticalVRCore Plugin: [Wiki - ForceTubeVR Integration](https://github.com/Tomura/TacticalVRCorePlugin/wiki/ForceTubeVR-Integration)
 
 ## Licenses
 All assets except the ones listed below are only licensed for the use with Unreal Engine. Please make sure to read the [Unreal Engine EULA](https://www.unrealengine.com/en-US/eula). 

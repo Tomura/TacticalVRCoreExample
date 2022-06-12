@@ -145,6 +145,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Animation")
 		UAnimSequence* HandTargetAnimation;
 
+	// Scale to apply when mirroring the hand, adjust to visualize your off hand correctly
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Visualization")
+		FVector MirroredScale;
+
 	FTransform GetBoneTransformAtTime(UAnimSequence* MyAnimSequence, /*float AnimTime,*/ int BoneIdx, bool bUseRawDataOnly);
 
 	// Returns the base target animation of the hand (if there is one)
@@ -254,15 +258,18 @@ public:
 
 	inline TEnumAsByte<EAxis::Type> GetCrossAxis()
 	{
-		if (MirroredScale.X < 0)
+		// Checking against the sign now to avoid possible mobile precision issues
+		FVector SignVec = MirroredScale.GetSignVector();
+
+		if (SignVec.X < 0)
 		{
 			return EAxis::X;
 		}
-		else if (MirroredScale.Z < 0)
+		else if (SignVec.Z < 0)
 		{
 			return EAxis::Z;
 		}
-		else if (MirroredScale.Y < 0)
+		else if (SignVec.Y < 0)
 		{
 			return EAxis::Y;
 		}
@@ -368,7 +375,7 @@ public:
 		//class USkeletalMeshComponent* HandVisualizerComponent;
 	class UPoseableMeshComponent* HandVisualizerComponent;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Visualization")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Transient, Category = "Hand Visualization")
 		class USkeletalMesh* VisualizationMesh;
 
 	// If we should show the visualization mesh
@@ -379,11 +386,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Visualization")
 		bool bMirrorVisualizationMesh;
 
-#endif
-
-	// Scale to apply when mirroring the hand, adjust to visualize your off hand correctly
+	// If we should show the grip range of this socket (shows text if always in range)
+	// If override distance is zero then it attempts to infer the value from the parent architecture
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Visualization")
-		FVector MirroredScale;
+		bool bShowRangeVisualization;
+
+	void PositionVisualizationMesh();
+	void HideVisualizationMesh();
+
+#endif
 
 #if WITH_EDITORONLY_DATA
 	// Material to apply to the hand

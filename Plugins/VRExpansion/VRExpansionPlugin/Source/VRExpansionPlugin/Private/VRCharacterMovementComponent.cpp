@@ -75,6 +75,17 @@ namespace CharacterMovementComponentStatics
 
 }
 
+void UVRCharacterMovementComponent::StoreSetTrackingPaused(bool bNewTrackingPaused)
+{
+	FVRMoveActionContainer MoveAction;
+	MoveAction.MoveAction = EVRMoveAction::VRMOVEACTION_PauseTracking;
+	MoveAction.MoveActionFlags = bNewTrackingPaused;
+	MoveAction.MoveActionLoc = VRRootCapsule->curCameraLoc;
+	MoveAction.MoveActionRot = VRRootCapsule->StoredCameraRotOffset;
+	MoveActionArray.MoveActions.Add(MoveAction);
+	CheckServerAuthedMoveAction();
+}
+
 void UVRCharacterMovementComponent::Crouch(bool bClientSimulation)
 {
 	if (!HasValidData())
@@ -532,6 +543,7 @@ void UVRCharacterMovementComponent::ServerMove_PerformMovement(const FCharacterN
 
 			CustomVRInputVector = MoveDataVR->ConditionalMoveReps.CustomVRInputVector;
 			MoveActionArray = MoveDataVR->ConditionalMoveReps.MoveActionArray;
+			VRReplicatedMovementMode = MoveDataVR->ReplicatedMovementMode;
 
 			// Set capsule location prior to testing movement
 			// I am overriding the replicated value here when movement is made on purpose
