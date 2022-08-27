@@ -30,6 +30,12 @@ Modifications:
 - Separated and rerigged model parts for compatibility
 - Reticle plane for sight
 
+### Low-Poly G17
+"Low-Poly G17" (https://skfb.ly/o7URs) by TastyTony is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).
+
+Modifications:
+- Separated and rerigged model parts for compatibility
+
 ### VRExpansionPlugin
 https://github.com/mordentral/VRExpansionPlugin<br>
 MIT License

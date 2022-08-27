@@ -102,7 +102,15 @@ UGripMotionControllerComponent::UGripMotionControllerComponent(const FObjectInit
 	bLerpingPosition = false;
 	bSmoothReplicatedMotion = false;
 	bReppedOnce = false;
+	bScaleTracking = false;
+	TrackingScaler = FVector(1.0f);
+	bLimitMinHeight = false;
+	MinimumHeight = 0.0f;
+	bLimitMaxHeight = false;
+	MaximumHeight = 240.0f;
 	bOffsetByHMD = false;
+	bLeashToHMD = false;
+	LeashRange = 300.0f;
 	bConstrainToPivot = false;
 
 	bSmoothHandTracking = false;
@@ -354,7 +362,22 @@ void UGripMotionControllerComponent::EndPlay(const EEndPlayReason::Type EndPlayR
 		DestroyPhysicsHandle(GrippedObjects[i]);
 
 		if (/*HasGripAuthority(GrippedObjects[i]) || */IsServer())
+		{
 			DropObjectByInterface(nullptr, GrippedObjects[i].GripID);
+		}
+		else
+		{
+			if (GrippedObjects[i].GrippedObject)
+			{
+				bool bSimulateOnDrop = true;
+				if (GrippedObjects[i].GrippedObject->GetClass()->ImplementsInterface(UVRGripInterface::StaticClass()))
+				{
+					bSimulateOnDrop = IVRGripInterface::Execute_SimulateOnDrop(GrippedObjects[i].GrippedObject);
+				}
+
+				NotifyDrop(GrippedObjects[i], bSimulateOnDrop);
+			}
+		}
 	}
 	GrippedObjects.Empty();
 
@@ -363,7 +386,22 @@ void UGripMotionControllerComponent::EndPlay(const EEndPlayReason::Type EndPlayR
 		DestroyPhysicsHandle(LocallyGrippedObjects[i]);
 
 		if (/*HasGripAuthority(LocallyGrippedObjects[i]) || */IsServer())
+		{
 			DropObjectByInterface(nullptr, LocallyGrippedObjects[i].GripID);
+		}
+		else
+		{
+			if (LocallyGrippedObjects[i].GrippedObject)
+			{
+				bool bSimulateOnDrop = true;
+				if (LocallyGrippedObjects[i].GrippedObject->GetClass()->ImplementsInterface(UVRGripInterface::StaticClass()))
+				{
+					bSimulateOnDrop = IVRGripInterface::Execute_SimulateOnDrop(LocallyGrippedObjects[i].GrippedObject);
+				}
+
+				NotifyDrop(LocallyGrippedObjects[i], bSimulateOnDrop);
+			}
+		}
 	}
 	LocallyGrippedObjects.Empty();
 
@@ -418,6 +456,7 @@ void UGripMotionControllerComponent::CreateRenderState_Concurrent(FRegisterCompo
 		GripRenderThreadRelativeTransform = GetRelativeTransform();
 		GripRenderThreadComponentScale = GetComponentScale();
 		GripRenderThreadProfileTransform = CurrentControllerProfileTransform;
+		GripRenderThreadLastLocationForLateUpdate = LastLocationForLateUpdate;
 	}
 
 	Super::Super::CreateRenderState_Concurrent(Context);
@@ -433,12 +472,14 @@ void UGripMotionControllerComponent::SendRenderTransform_Concurrent()
 			FTransform RenderThreadRelativeTransform;
 			FVector RenderThreadComponentScale;
 			FTransform RenderThreadProfileTransform;
+			FVector GripRenderThreadLastLocationForLateUpdate;
 		};
 
 		FPrimitiveUpdateRenderThreadRelativeTransformParams UpdateParams;
 		UpdateParams.RenderThreadRelativeTransform = GetRelativeTransform();
 		UpdateParams.RenderThreadComponentScale = GetComponentScale();
 		UpdateParams.RenderThreadProfileTransform = CurrentControllerProfileTransform;
+		UpdateParams.GripRenderThreadLastLocationForLateUpdate = LastLocationForLateUpdate;
 
 		ENQUEUE_RENDER_COMMAND(UpdateRTRelativeTransformCommand)(
 			[UpdateParams, this](FRHICommandListImmediate& RHICmdList)
@@ -446,6 +487,7 @@ void UGripMotionControllerComponent::SendRenderTransform_Concurrent()
 				GripRenderThreadRelativeTransform = UpdateParams.RenderThreadRelativeTransform;
 				GripRenderThreadComponentScale = UpdateParams.RenderThreadComponentScale;
 				GripRenderThreadProfileTransform = UpdateParams.RenderThreadProfileTransform;
+				GripRenderThreadLastLocationForLateUpdate = UpdateParams.GripRenderThreadLastLocationForLateUpdate;
 			});
 	}
 
@@ -1340,7 +1382,7 @@ bool UGripMotionControllerComponent::GripActor(
 	//bool bIgnoreHandRotation = false;
 
 	TArray<FBPGripPair> HoldingControllers;
-	bool bIsHeld;
+	bool bIsHeld = false;
 	bool bHadOriginalSettings = false;
 	bool bOriginalGravity = false;
 	bool bOriginalReplication = false;
@@ -1612,7 +1654,7 @@ bool UGripMotionControllerComponent::GripComponent(
 	//bool bIgnoreHandRotation = false;
 
 	TArray<FBPGripPair> HoldingControllers;
-	bool bIsHeld;
+	bool bIsHeld = false;
 	bool bHadOriginalSettings = false;
 	bool bOriginalGravity = false;
 	bool bOriginalReplication = false;
@@ -4119,7 +4161,7 @@ bool UGripMotionControllerComponent::TeleportMoveGrip_Impl(FBPActorGripInformati
 		if (!Grip.bSkipNextTeleportCheck && (bRootHasInterface || bActorHasInterface))
 		{
 			TArray<FBPGripPair> HoldingControllers;
-			bool bIsHeld;
+			bool bIsHeld = false;
 			IVRGripInterface::Execute_IsHeld(Grip.GrippedObject, HoldingControllers, bIsHeld);
 
 			for (FBPGripPair pair : HoldingControllers)
@@ -6407,6 +6449,80 @@ bool UGripMotionControllerComponent::CheckComponentWithSweep(UPrimitiveComponent
 	return false;
 }
 
+bool UGripMotionControllerComponent::HasTrackingParameters()
+{
+	return bOffsetByHMD || bScaleTracking || bLeashToHMD || bLimitMinHeight || bLimitMaxHeight;
+}
+
+void UGripMotionControllerComponent::ApplyTrackingParameters(FVector& OriginalPosition, bool bIsInGameThread)
+{
+	if (bScaleTracking)
+	{
+		OriginalPosition *= TrackingScaler;
+	}
+
+	if (bLimitMinHeight)
+	{
+		OriginalPosition.Z = FMath::Max(OriginalPosition.Z, MinimumHeight);
+	}
+
+	if (bLimitMaxHeight)
+	{
+		OriginalPosition.Z = FMath::Min(OriginalPosition.Z, MaximumHeight);
+	}
+
+	if (bOffsetByHMD || bLeashToHMD)
+	{
+		if (bIsInGameThread)
+		{
+			if (IsLocallyControlled() && GEngine->XRSystem.IsValid() && GEngine->XRSystem->IsHeadTrackingAllowedForWorld(*GetWorld()))
+			{
+				FQuat curRot;
+				FVector curLoc;
+				if (GEngine->XRSystem->GetCurrentPose(IXRTrackingSystem::HMDDeviceId, curRot, curLoc))
+				{
+
+					if (AttachChar.IsValid() && AttachChar->VRReplicatedCamera)
+					{
+						AttachChar->VRReplicatedCamera->ApplyTrackingParameters(curLoc);
+					}
+
+					//curLoc.Z = 0;
+					LastLocationForLateUpdate = curLoc;
+				}
+			}
+			else
+			{
+				if (AttachChar.IsValid() && AttachChar->VRReplicatedCamera)
+				{
+					// Sample camera location instead
+					LastLocationForLateUpdate = AttachChar->VRReplicatedCamera->GetRelativeLocation();
+				}
+			}
+		}
+
+		// #TODO: This is technically unsafe, need to use a seperate value like the transforms for the render thread
+		// If I ever delete the simple char then this setup can just go away anyway though
+		// It has a data race condition right now though
+		FVector CorrectLastLocation = bIsInGameThread ? LastLocationForLateUpdate : GripRenderThreadLastLocationForLateUpdate;
+
+		if (bOffsetByHMD)
+		{
+			OriginalPosition -= FVector(CorrectLastLocation.X, CorrectLastLocation.Y, 0.0f);
+		}
+
+		if (bLeashToHMD)
+		{
+			FVector DifferenceVec = bOffsetByHMD ? OriginalPosition : (OriginalPosition - CorrectLastLocation);
+
+			if (DifferenceVec.SizeSquared() > FMath::Square(LeashRange))
+			{
+				OriginalPosition = CorrectLastLocation + (DifferenceVec.GetSafeNormal() * LeashRange);
+			}
+		}
+	}
+}
+
 //=============================================================================
 bool UGripMotionControllerComponent::GripPollControllerState(FVector& Position, FRotator& Orientation , float WorldToMetersScale)
 {
@@ -6446,30 +6562,9 @@ bool UGripMotionControllerComponent::GripPollControllerState(FVector& Position, 
 				}
 #endif
 
-				if (bOffsetByHMD)
+				if (HasTrackingParameters())
 				{
-					if (bIsInGameThread)
-					{
-						if (GEngine->XRSystem.IsValid() && GEngine->XRSystem->IsHeadTrackingAllowedForWorld(*GetWorld()))
-						{
-							FQuat curRot;
-							FVector curLoc;
-							if (GEngine->XRSystem->GetCurrentPose(IXRTrackingSystem::HMDDeviceId, curRot, curLoc))
-							{
-								curLoc.Z = 0;
-								LastLocationForLateUpdate = curLoc;
-							}
-							else
-							{
-								 // Keep last location instead
-							}
-						}
-					}
-
-					// #TODO: This is technically unsafe, need to use a seperate value like the transforms for the render thread
-					// If I ever delete the simple char then this setup can just go away anyway though
-					// It has a data race condition right now though
-					Position -= LastLocationForLateUpdate;
+					ApplyTrackingParameters(Position, bIsInGameThread);
 				}
 
 				if (bOffsetByControllerProfile)
@@ -6884,29 +6979,32 @@ void UGripMotionControllerComponent::Server_NotifyLocalGripRemoved_Implementatio
 	if (Result == EBPVRResultSwitch::OnFailed)
 		return;
 
-	switch (FoundGrip.GripTargetType)
+	if (FoundGrip.GripCollisionType != EGripCollisionType::EventsOnly)
 	{
-	case EGripTargetType::ActorGrip:
-	{
-		if (AActor* DroppingActor = FoundGrip.GetGrippedActor())
+		switch (FoundGrip.GripTargetType)
 		{
-			if (!DroppingActor->IsPendingKill())
-			{
-				DroppingActor->SetActorTransform(TransformAtDrop, false, nullptr, ETeleportType::TeleportPhysics);
-			}
-		}
-	}break;
-	case EGripTargetType::ComponentGrip:
-	{
-		if (UPrimitiveComponent* DroppingComp = FoundGrip.GetGrippedComponent())
+		case EGripTargetType::ActorGrip:
 		{
-			if (!DroppingComp->IsPendingKill())
+			if (AActor* DroppingActor = FoundGrip.GetGrippedActor())
 			{
-				DroppingComp->SetWorldTransform(TransformAtDrop, false, nullptr, ETeleportType::TeleportPhysics);
+				if (!DroppingActor->IsPendingKill())
+				{
+					DroppingActor->SetActorTransform(TransformAtDrop, false, nullptr, ETeleportType::TeleportPhysics);
+				}
 			}
+		}break;
+		case EGripTargetType::ComponentGrip:
+		{
+			if (UPrimitiveComponent* DroppingComp = FoundGrip.GetGrippedComponent())
+			{
+				if (!DroppingComp->IsPendingKill())
+				{
+					DroppingComp->SetWorldTransform(TransformAtDrop, false, nullptr, ETeleportType::TeleportPhysics);
+				}
+			}
+		}break;
+		default:break;
 		}
-	}break;
-	default:break;
 	}
 
 	if (!DropObjectByInterface(nullptr, FoundGrip.GripID, AngularVelocity, LinearVelocity))

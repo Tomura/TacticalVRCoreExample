@@ -4,7 +4,9 @@
 #include "SceneManagement.h"
 //#include "UObject/Field.h"
 #include "VRBPDatatypes.h"
+#include "ScopedTransaction.h"
 #include "Modules/ModuleManager.h"
+#include "EditorViewportClient.h"
 #include "Misc/PackageName.h"
 //#include "Persona.h"
 
