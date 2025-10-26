@@ -1,8 +1,12 @@
 // Copyright 1998-2016 Epic Games, Inc. All Rights Reserved.
 
 #include "ParentRelativeAttachmentComponent.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ParentRelativeAttachmentComponent)
+
 #include "VRBaseCharacter.h"
 #include "VRCharacter.h"
+#include "IXRTrackingSystem.h"
+#include "VRRootComponent.h"
 //#include "Runtime/Engine/Private/EnginePrivate.h"
 //#include "VRSimpleCharacter.h"
 //#include "VRCharacter.h"
@@ -21,7 +25,7 @@ UParentRelativeAttachmentComponent::UParentRelativeAttachmentComponent(const FOb
 	SetRelativeScale3D(FVector(1.0f, 1.0f, 1.0f));
 	SetRelativeLocation(FVector::ZeroVector);
 	YawTolerance = 0.0f;
-	bOffsetByHMD = false;
+	//bOffsetByHMD = false;
 	
 	bLerpTransition = true;
 	LerpSpeed = 100.0f;
@@ -34,8 +38,8 @@ UParentRelativeAttachmentComponent::UParentRelativeAttachmentComponent(const FOb
 
 	bIgnoreRotationFromParent = false;
 	bUpdateInCharacterMovement = true;
+	bIsPaused = false;
 
-	bUseFeetLocation = false;
 	CustomOffset = FVector::ZeroVector;
 
 	//YawRotationMethod = EVR_PRC_RotationMethod::PRC_ROT_HMD;
@@ -46,7 +50,7 @@ void UParentRelativeAttachmentComponent::InitializeComponent()
 	Super::InitializeComponent();
 
 	// Update our tracking
-	if (!bUseFeetLocation && AttachChar.IsValid()) // New case to early out and with less calculations
+	if (!bUseFeetLocation && IsValid(AttachChar) && IsValid(AttachChar->VRReplicatedCamera)) // New case to early out and with less calculations
 	{
 		SetRelativeTransform(AttachChar->VRReplicatedCamera->GetRelativeTransform());
 	}
@@ -61,7 +65,7 @@ void UParentRelativeAttachmentComponent::OnAttachmentChanged()
 	}
 	else
 	{
-		AttachChar.Reset();
+		AttachChar = nullptr;
 	}
 
 	if (AVRBaseCharacter * BaseCharacterOwner = Cast<AVRBaseCharacter>(this->GetOwner()))
@@ -70,14 +74,85 @@ void UParentRelativeAttachmentComponent::OnAttachmentChanged()
 	}
 	else
 	{
-		AttachBaseChar.Reset();
+		AttachBaseChar = nullptr;
 	}
 
 	Super::OnAttachmentChanged();
 }
 
+void UParentRelativeAttachmentComponent::SetPaused(bool bNewPaused, bool bZeroOutRotation, bool bZeroOutLocation)
+{
+	if (bNewPaused != bIsPaused)
+	{
+		bIsPaused = bNewPaused;
+
+		if (bIsPaused && (bZeroOutLocation || bZeroOutRotation))
+		{
+			FVector NewLoc = this->GetRelativeLocation();
+			FRotator NewRot = this->GetRelativeRotation();
+
+			if (bZeroOutLocation)
+			{
+				NewLoc = FVector::ZeroVector;
+			}
+
+			if (bZeroOutRotation)
+			{
+				NewRot = FRotator::ZeroRotator;
+			}
+
+			SetRelativeLocationAndRotation(NewLoc, NewRot);
+		}
+	}
+}
+
+void UParentRelativeAttachmentComponent::SetRelativeRotAndLoc(FVector NewRelativeLocation, FRotator NewRelativeRotation, float DeltaTime)
+{
+
+	RunSampling(NewRelativeRotation, NewRelativeLocation);
+
+	if (bUseFeetLocation)
+	{
+		FVector TotalOffset = CustomOffset;
+		if (bUseCenterAsFeetLocation && AttachChar && AttachChar->VRRootReference)
+		{
+			TotalOffset.Z += AttachChar->VRRootReference->GetUnscaledCapsuleHalfHeight();
+		}
+
+		if (!bIgnoreRotationFromParent)
+		{
+			SetRelativeLocationAndRotation(
+				FVector(NewRelativeLocation.X, NewRelativeLocation.Y, 0.0f) + TotalOffset,
+				GetCalculatedRotation(NewRelativeRotation, DeltaTime)
+			);
+		}
+		else
+		{
+			SetRelativeLocation(FVector(NewRelativeLocation.X, NewRelativeLocation.Y, 0.0f) + TotalOffset);
+		}
+	}
+	else
+	{
+		if (!bIgnoreRotationFromParent)
+		{
+			SetRelativeLocationAndRotation(
+				NewRelativeLocation + CustomOffset,
+				GetCalculatedRotation(NewRelativeRotation, DeltaTime)
+			); // Use the HMD height instead
+		}
+		else
+		{
+			SetRelativeLocation(NewRelativeLocation + CustomOffset); // Use the HMD height instead
+		}
+	}
+}
+
 void UParentRelativeAttachmentComponent::UpdateTracking(float DeltaTime)
 {
+	// We are paused, do not update tracking anymore
+	if (bIsPaused)
+		return;
+
 	if (OptionalWaistTrackingParent.IsValid())
 	{
 		//#TODO: bOffsetByHMD not supported with this currently, fix it, need to check for both camera and HMD
@@ -99,9 +174,18 @@ void UParentRelativeAttachmentComponent::UpdateTracking(float DeltaTime)
 		SetRelativeTransform(TrackedParentWaist);
 
 	}
-	else if (AttachChar.IsValid()) // New case to early out and with less calculations
+	else if (IsValid(AttachChar)) // New case to early out and with less calculations
 	{
-		SetRelativeRotAndLoc(AttachChar->VRRootReference->curCameraLoc, AttachChar->VRRootReference->StoredCameraRotOffset, DeltaTime);
+		if (AttachChar->bRetainRoomscale)
+		{
+			SetRelativeRotAndLoc(AttachChar->VRRootReference->curCameraLoc, AttachChar->VRRootReference->StoredCameraRotOffset, DeltaTime);
+		}
+		else
+		{
+			FVector CameraLoc = FVector(0.0f, 0.0f, AttachChar->VRRootReference->curCameraLoc.Z);
+			CameraLoc += AttachChar->VRRootReference->StoredCameraRotOffset.RotateVector(FVector(-AttachChar->VRRootReference->VRCapsuleOffset.X, -AttachChar->VRRootReference->VRCapsuleOffset.Y, 0.0f));
+			SetRelativeRotAndLoc(CameraLoc, AttachChar->VRRootReference->StoredCameraRotOffset, DeltaTime);
+		}
 	}
 	else if (IsLocallyControlled() && GEngine->XRSystem.IsValid() && GEngine->XRSystem->IsHeadTrackingAllowed())
 	{
@@ -109,11 +193,11 @@ void UParentRelativeAttachmentComponent::UpdateTracking(float DeltaTime)
 		FVector curCameraLoc;
 		if (GEngine->XRSystem->GetCurrentPose(IXRTrackingSystem::HMDDeviceId, curRot, curCameraLoc))
 		{
-			if (bOffsetByHMD)
+			/*if (bOffsetByHMD)
 			{
 				curCameraLoc.X = 0;
 				curCameraLoc.Y = 0;
-			}
+			}*/
 
 			if (!bIgnoreRotationFromParent)
 			{
@@ -124,7 +208,7 @@ void UParentRelativeAttachmentComponent::UpdateTracking(float DeltaTime)
 				SetRelativeRotAndLoc(curCameraLoc, FRotator::ZeroRotator, DeltaTime);
 		}
 	}
-	else if (AttachBaseChar.IsValid())
+	else if (IsValid(AttachBaseChar))
 	{
 		if (AttachBaseChar->VRReplicatedCamera)
 		{
@@ -154,7 +238,7 @@ void UParentRelativeAttachmentComponent::UpdateTracking(float DeltaTime)
 
 void UParentRelativeAttachmentComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
 {
-	if (!bUpdateInCharacterMovement || !AttachChar.IsValid())
+	if (!bUpdateInCharacterMovement || !IsValid(AttachChar))
 	{
 		UpdateTracking(DeltaTime);
 	}

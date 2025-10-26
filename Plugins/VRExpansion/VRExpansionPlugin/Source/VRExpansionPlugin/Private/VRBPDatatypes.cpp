@@ -1,6 +1,10 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "VRBPDatatypes.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VRBPDatatypes)
+
+#include "HAL/IConsoleManager.h"
+#include "Chaos/ChaosEngineInterface.h"
 
 namespace VRDataTypeCVARs
 {
@@ -100,10 +104,16 @@ void FBPEuroLowPassFilter::ResetSmoothingFilter()
 	DeltaFilter.bFirstTime = true;
 }
 
-FVector FBPEuroLowPassFilter::RunFilterSmoothing(const FVector &InRawValue, const float &InDeltaTime)
+FVector FBPEuroLowPassFilter::RunFilterSmoothing(const FVector& InRawValue, const float& InDeltaTime)
 {
+	if (InDeltaTime <= 0.0f)
+	{
+		// Invalid delta time, return the in value
+		return InRawValue;
+	}
+
 	// Calculate the delta, if this is the first time then there is no delta
-	const FVector Delta = RawFilter.bFirstTime == true ? FVector::ZeroVector : (InRawValue - RawFilter.PreviousRaw) * 1.0f / InDeltaTime;
+	const FVector Delta = RawFilter.bFirstTime == true ? FVector::ZeroVector : (InRawValue - RawFilter.PreviousRaw) * 1.0 / InDeltaTime;
 
 	// Filter the delta to get the estimated
 	const FVector Estimated = DeltaFilter.Filter(Delta, FVector(DeltaFilter.CalculateAlphaTau(DeltaCutoff, InDeltaTime)));
@@ -123,6 +133,11 @@ void FBPEuroLowPassFilterQuat::ResetSmoothingFilter()
 
 FQuat FBPEuroLowPassFilterQuat::RunFilterSmoothing(const FQuat& InRawValue, const float& InDeltaTime)
 {
+	if (InDeltaTime <= 0.0f)
+	{
+		// Invalid delta time, return the in value
+		return InRawValue;
+	}
 
 	FQuat NewInVal = InRawValue;
 	if (!RawFilter.bFirstTime)
@@ -139,11 +154,11 @@ FQuat FBPEuroLowPassFilterQuat::RunFilterSmoothing(const FQuat& InRawValue, cons
 
 	if (!RawFilter.bFirstTime)
 	{
-		Delta = (NewInVal - RawFilter.PreviousRaw) * (1.0f / InDeltaTime);
+		Delta = (NewInVal - RawFilter.PreviousRaw) * (1.0 / InDeltaTime);
 	}
 
 
-	float AlphaTau = DeltaFilter.CalculateAlphaTau(DeltaCutoff, InDeltaTime);
+	double AlphaTau = DeltaFilter.CalculateAlphaTau(DeltaCutoff, InDeltaTime);
 	FQuat AlphaTauQ(AlphaTau, AlphaTau, AlphaTau, AlphaTau);
 	const FQuat Estimated = DeltaFilter.Filter(Delta, AlphaTauQ);
 
@@ -162,6 +177,11 @@ void FBPEuroLowPassFilterTrans::ResetSmoothingFilter()
 
 FTransform FBPEuroLowPassFilterTrans::RunFilterSmoothing(const FTransform& InRawValue, const float& InDeltaTime)
 {
+	if (InDeltaTime <= 0.0f)
+	{
+		// Invalid delta time, return the in value
+		return InRawValue;
+	}
 
 	FTransform NewInVal = InRawValue;
 	if (!RawFilter.bFirstTime)
@@ -178,7 +198,7 @@ FTransform FBPEuroLowPassFilterTrans::RunFilterSmoothing(const FTransform& InRaw
 	// Calculate the delta, if this is the first time then there is no delta
 	FTransform Delta = FTransform::Identity;
 
-	float Frequency = 1.0f / InDeltaTime;
+	double Frequency = 1.0 / InDeltaTime;
 	if (!RawFilter.bFirstTime)
 	{
 		Delta.SetLocation((NewInVal.GetLocation() - RawFilter.PreviousRaw.GetLocation()) * Frequency);
@@ -187,7 +207,7 @@ FTransform FBPEuroLowPassFilterTrans::RunFilterSmoothing(const FTransform& InRaw
 	}
 
 
-	float AlphaTau = DeltaFilter.CalculateAlphaTau(DeltaCutoff, InDeltaTime);
+	double AlphaTau = DeltaFilter.CalculateAlphaTau(DeltaCutoff, InDeltaTime);
 	FTransform AlphaTauQ(FQuat(AlphaTau, AlphaTau, AlphaTau, AlphaTau), FVector(AlphaTau), FVector(AlphaTau));
 	const FTransform Estimated = DeltaFilter.Filter(Delta, AlphaTauQ);
 

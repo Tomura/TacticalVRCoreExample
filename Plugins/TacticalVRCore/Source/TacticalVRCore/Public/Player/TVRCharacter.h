@@ -32,8 +32,8 @@ public:
 		bIsSecondaryGrip(false),
 		bIsSlotGrip(false),
 		GripTransform(FTransform_NetQuantize::Identity),
-		GripBoneName(EName::NAME_None),
-		SlotName(EName::NAME_None)
+		GripBoneName(EName::None),
+		SlotName(EName::None)
     { }
 
     /** Object that should be gripped. */
@@ -240,7 +240,11 @@ public:
 	
 	ATVRGraspingHand* GetGraspingHand(EControllerHand HandType) const;
 	ATVRGraspingHand* GetGraspingHand(UGripMotionControllerComponent* Controller) const;
-	
+
+
+	UPROPERTY(Category = Hand, EditDefaultsOnly)
+	bool bGraspingHands;
+
 protected: // Methods
 
 	/** Handles any Movement logic during Tick. Do not call elsewhere */
@@ -265,6 +269,9 @@ protected: // Methods
 	
 	UFUNCTION(Category = "Character|InputActions", BlueprintCallable)
 	void OnAxisMoveY(float Value);
+	
+	UFUNCTION(Category = "Character|InputActions", BlueprintCallable)
+	void OnAxisMove(const FVector2D& Value);
 	
 	UFUNCTION(Category = "Character|InputActions", BlueprintCallable)
 	void OnTriggerAxisL(float Value);

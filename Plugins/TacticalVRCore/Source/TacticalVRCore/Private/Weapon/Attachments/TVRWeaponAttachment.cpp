@@ -6,6 +6,7 @@
 #include "Weapon/Component/TVRAttachmentPoint.h"
 #include "Components/ArrowComponent.h"
 #include "Weapon/TVRGunBase.h"
+#include "Weapon/Component/TVRMagazineWell.h"
 
 
 FName ATVRWeaponAttachment::StaticMeshComponentName(TEXT("Mesh"));
@@ -30,6 +31,12 @@ void ATVRWeaponAttachment::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
 	InitAttachments();
+	TArray<UTVRMagazineWell*> MagWells;
+	GetComponents<UTVRMagazineWell>(MagWells);
+	for(const auto MW : MagWells)
+	{
+		MW->OnConstruction();
+	}
 }
 
 
@@ -50,6 +57,20 @@ void ATVRWeaponAttachment::BeginPlay()
 	}
 	
 	GetWorldTimerManager().SetTimerForNextTick(this, &ATVRWeaponAttachment::FindAttachPointAndAttach);
+}
+
+void ATVRWeaponAttachment::Destroyed()
+{
+	Super::Destroyed();
+	if(const auto Gun = GetGunOwner())
+	{
+		if(IsValid(Gun))
+		{			
+			Gun->EventOnGripped.RemoveAll(this);
+			Gun->EventOnDropped.RemoveAll(this);
+			Gun->OnAttachmentDetached(this, AttachmentPoint);
+		}
+	}
 }
 
 void ATVRWeaponAttachment::InitAttachments()
@@ -120,7 +141,9 @@ void ATVRWeaponAttachment::AttachToWeapon(UTVRAttachmentPoint* AttachPoint)
 		}
 		SetOwner(Gun);
 		AttachmentPoint = AttachPoint;
-		AttachPoint->OnWeaponAttachmentAttached(this);	
+		AttachPoint->OnWeaponAttachmentAttached(this);
+		Gun->OnAttachmentAttached(this, AttachPoint);
+		
 		AddTickPrerequisiteComponent(GunMesh);
 	}
 	AddTickPrerequisiteActor(Gun);

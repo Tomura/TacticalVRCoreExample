@@ -1,7 +1,18 @@
 // Copyright 1998-2016 Epic Games, Inc. All Rights Reserved.
 
 #include "VRCharacter.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VRCharacter)
+
 #include "NavigationSystem.h"
+#include "VRBPDatatypes.h"
+//#include "GripMotionControllerComponent.h"
+//#include "VRExpansionFunctionLibrary.h"
+//#include "ReplicatedVRCameraComponent.h"
+//#include "ParentRelativeAttachmentComponent.h"
+#include "VRRootComponent.h"
+#include "VRCharacterMovementComponent.h"
+#include "GameFramework/Controller.h"
+#include "Runtime/Launch/Resources/Version.h"
 #include "VRPathFollowingComponent.h"
 //#include "Runtime/Engine/Private/EnginePrivate.h"
 
@@ -31,9 +42,16 @@ AVRCharacter::AVRCharacter(const FObjectInitializer& ObjectInitializer)
 
 FVector AVRCharacter::GetTeleportLocation(FVector OriginalLocation)
 {
-	FVector modifier = VRRootReference->OffsetComponentToWorld.GetLocation() - this->GetActorLocation();
-	modifier.Z = 0.0f; // Null out Z
-	return OriginalLocation - modifier;
+	if (!bRetainRoomscale)
+	{
+		return OriginalLocation + FVector(0.f, 0.f, VRRootReference->GetScaledCapsuleHalfHeight());
+	}
+	else
+	{
+		FVector modifier = VRRootReference->OffsetComponentToWorld.GetLocation() - this->GetActorLocation();
+		modifier.Z = 0.0f; // Null out Z
+		return OriginalLocation - modifier;
+	}
 }
 
 bool AVRCharacter::TeleportTo(const FVector& DestLocation, const FRotator& DestRotation, bool bIsATest, bool bNoCheck)
@@ -174,6 +192,11 @@ void AVRCharacter::ExtendedSimpleMoveToLocation(const FVector& GoalLocation, flo
 	}
 }
 
+FVector AVRCharacter::GetTargetHeightOffset()
+{
+	return bRetainRoomscale ? FVector::ZeroVector : VRRootReference->GetTargetHeightOffset();
+}
+
 void AVRCharacter::RegenerateOffsetComponentToWorld(bool bUpdateBounds, bool bCalculatePureYaw)
 {
 	if (VRRootReference)
@@ -209,5 +232,17 @@ void AVRCharacter::SetCharacterHalfHeightVR(float HalfHeight, bool bUpdateOverla
 	else
 	{
 		Super::SetCharacterHalfHeightVR(HalfHeight, bUpdateOverlaps);
+	}
+}
+
+FVector AVRCharacter::GetProjectedVRLocation() const
+{
+	if (VRRootReference)
+	{
+		return OffsetComponentToWorld.TransformPosition(-FVector(VRRootReference->VRCapsuleOffset.X, VRRootReference->VRCapsuleOffset.Y, 0.0f));
+	}
+	else
+	{
+		return AVRBaseCharacter::GetProjectedVRLocation();
 	}
 }

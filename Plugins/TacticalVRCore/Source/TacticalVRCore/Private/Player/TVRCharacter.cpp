@@ -2,22 +2,35 @@
 
 #include "Player/TVRCharacter.h"
 
-#include "Settings/TVRCoreGameplaySettings.h"
+#include "Kismet/KismetMathLibrary.h"
 #include "GameplayTags.h"
+
+#include "HeadMountedDisplayFunctionLibrary.h"
+
+
 #include "TacticalCollisionProfiles.h"
 
 #include "Libraries/TVRFunctionLibrary.h"
-#include "Kismet/KismetMathLibrary.h"
-#include "Weapon/TVRGunBase.h"
-#include "Components/TVRClimbableCapsuleComponent.h"
-#include "Player/TVRCharacterMovementComponent.h"
+
+
+#include "VRGlobalSettings.h"
+
 #include "TacticalTraceChannels.h"
+#include "VRExpansionFunctionLibrary.h"
+
+#include "Settings/TVRCoreGameplaySettings.h"
+
+#include "Player/TVRCharacterMovementComponent.h"
 #include "Player/TVRGraspingHand.h"
 #include "Player/PauseMenuActor.h"
+#include "Player/TVRPlayerController.h"
+
+#include "Components/TVRClimbableCapsuleComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/TVRHoverInputVolume.h"
 #include "Components/WidgetInteractionComponent.h"
-#include "Player/TVRPlayerController.h"
+
+#include "Weapon/TVRGunBase.h"
 #include "Weapon/TVRMagazine.h"
 #include "Weapon/Attachments/TVRWeaponAttachment.h"
 // #include "Net/UnrealNetwork.h" // todo: include once networking is relevant
@@ -98,15 +111,17 @@ ATVRCharacter::ATVRCharacter(const FObjectInitializer& OI)
 
 	GrabHysteresisLeft = FTVRHysteresisValue(0.2f, 0.5f);
 	GrabHysteresisRight = FTVRHysteresisValue(0.2f, 0.5f);
+
+	bGraspingHands = true;
 }
 
 void ATVRCharacter::GetLifetimeReplicatedProps(TArray <FLifetimeProperty> & OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
-	DOREPLIFETIME_CONDITION(ATVRCharacter, bIsInMenu, COND_SkipOwner); // Owner is mostly authoritive here. Server can force it off using a client function if necessary
-	DOREPLIFETIME_CONDITION(ATVRCharacter, RightControllerOffset, COND_SkipOwner);
-	DOREPLIFETIME_CONDITION(ATVRCharacter, LeftControllerOffset, COND_SkipOwner);
+	// DOREPLIFETIME_CONDITION(ATVRCharacter, bIsInMenu, COND_SkipOwner); // Owner is mostly authoritive here. Server can force it off using a client function if necessary
+	// DOREPLIFETIME_CONDITION(ATVRCharacter, RightControllerOffset, COND_SkipOwner);
+	// DOREPLIFETIME_CONDITION(ATVRCharacter, LeftControllerOffset, COND_SkipOwner);
 }
 
 
@@ -160,7 +175,7 @@ void ATVRCharacter::PossessedBy(AController* NewController)
     if(bAlreadyPossessed)
     {
         UHeadMountedDisplayFunctionLibrary::SetTrackingOrigin(EHMDTrackingOrigin::Floor);
-    }
+	}
     else
     {
         ClientPossessed();
@@ -196,8 +211,9 @@ void ATVRCharacter::SetupHands()
         UHeadMountedDisplayFunctionLibrary::SetTrackingOrigin(EHMDTrackingOrigin::Floor);
         UHeadMountedDisplayFunctionLibrary::SetSpectatorScreenMode(ESpectatorScreenMode::SingleEyeCroppedToFill);
     }
-    
-    SpawnGraspingHands();
+	if (bGraspingHands) {
+		SpawnGraspingHands();
+	}
 }
 
 void ATVRCharacter::RepositionHands(bool bIsRightHand, const FTransform& NewTransform)
@@ -451,7 +467,6 @@ void ATVRCharacter::HandleMovement(float DeltaTime)
 		AddMovementInput(MoveAxisForward, AxisForward, false);
 		AddMovementInput(MoveAxisRight, AxisRight, false);
 	}
-
 }
 
 void ATVRCharacter::HandleTurning(float DeltaTime)
@@ -543,6 +558,11 @@ void ATVRCharacter::OnAxisMoveX(float Value)
 void ATVRCharacter::OnAxisMoveY(float Value)
 {
 	AxisMove.Y = FMath::Clamp(Value, -1.f, 1.f);
+}
+
+void ATVRCharacter::OnAxisMove(const FVector2D& Value)
+{
+	AxisMove = Value.ClampAxes(-1.f, 1.f);
 }
 
 void ATVRCharacter::OnTriggerAxisL(float Value)
@@ -678,19 +698,18 @@ bool ATVRCharacter::TryGrip(UGripMotionControllerComponent* Hand, bool bIsLargeG
 	}
 
 	// todo: check secondary
-	TArray<FHitResult> Hits;
-	if(TraceGrips(Hits, Hand, GrabSphere))
+	if(TArray<FHitResult> Hits; TraceGrips(Hits, Hand, GrabSphere))
 	{
+		UE_LOG(LogTemp, Log, TEXT("Found %d objects in grip trace"), Hits.Num());
+		
 		FHitResult* BestHit = nullptr;
 		uint8 BestPriority = 0;
 		UObject* BestObject = nullptr;
-		FVector BestLoc;
 		for(FHitResult& Hit : Hits)
 		{
 			UObject* GripInterface = nullptr;
 			
-			const bool bIsGripInterface = Hit.GetComponent()->Implements<UVRGripInterface>();
-			if(bIsGripInterface)
+			if(Hit.GetComponent()->Implements<UVRGripInterface>())
 			{
 				GripInterface = Hit.GetComponent();
 			}
@@ -710,8 +729,7 @@ bool ATVRCharacter::TryGrip(UGripMotionControllerComponent* Hand, bool bIsLargeG
 					}
 				}
 				
-				const bool bOwnerImplementInterface = GripOwner->Implements<UVRGripInterface>();
-				if(bOwnerImplementInterface)
+				if(GripOwner->Implements<UVRGripInterface>())
 				{
 					GripInterface = GripOwner;
 				}
@@ -736,10 +754,10 @@ bool ATVRCharacter::TryGrip(UGripMotionControllerComponent* Hand, bool bIsLargeG
 						bool bHasSecondary = false;
 						FTransform SecondaryTF;
 						FName SlotName;
-						IVRGripInterface::Execute_ClosestGripSlotInRange(BestObject, Hand->GetComponentLocation(), true, bHasSecondary, SecondaryTF, SlotName, Hand, NAME_None);
+						IVRGripInterface::Execute_ClosestGripSlotInRange(BestObject, Hand->GetComponentLocation(), true, bHasSecondary, SecondaryTF, SlotName, Hand, EName::None);
 						if(!bHasSecondary)
 						{
-							DeltaPrio = 1; // we do not wanna steal is possible							
+							DeltaPrio = 1; // we do not want to steal if possible							
 						}
 					}
 				}
@@ -813,7 +831,8 @@ bool ATVRCharacter::TryDrop(UGripMotionControllerComponent* Hand, bool bIsLarge)
 }
 
 bool ATVRCharacter::TraceGrips(TArray<FHitResult>& OutHits, UGripMotionControllerComponent* Hand, UPrimitiveComponent* OverlapComp)
-{	// Trace for object first
+{	
+	// Trace for object first
 	constexpr float TraceLength = 0.01;
 	const FVector TraceStart = OverlapComp->Bounds.Origin - OverlapComp->GetForwardVector() * TraceLength;
 	const FVector TraceStop = OverlapComp->Bounds.Origin + OverlapComp->GetForwardVector() * TraceLength;
@@ -823,8 +842,9 @@ bool ATVRCharacter::TraceGrips(TArray<FHitResult>& OutHits, UGripMotionControlle
 	FCollisionQueryParams QueryParams(FName("TraceGrip"), false);
 	QueryParams.AddIgnoredActors(IgnoreActors);
 	QueryParams.AddIgnoredActor(this);
-	const bool bHitSomething = GetWorld()->SweepMultiByChannel(OutHits, TraceStart, TraceStop, FQuat(), ECC_VRTraceChannel, 
-    FCollisionShape::MakeSphere(SweepRadius), QueryParams);
+	const bool bHitSomething = GetWorld()->SweepMultiByChannel(
+		OutHits, TraceStart, TraceStop, FQuat::Identity, ECC_VRTraceChannel, 
+		FCollisionShape::MakeSphere(SweepRadius), QueryParams);
 	return bHitSomething;
 }
 
@@ -1001,8 +1021,10 @@ void ATVRCharacter::GrabOrUse(UGripMotionControllerComponent* UsingHand)
         }
     }
 	
+	UE_LOG(LogTemp, Log, TEXT("Trying to grip"));
     if(!TryGrip(UsingHand, false))
     {
+		UE_LOG(LogTemp, Log, TEXT("Did not find a grip"));
     	FBPActorGripInformation Grip;
     	if(UsingHand->HasGrippedObjects() || GetOtherControllerHand(UsingHand)->GetIsSecondaryAttachment(UsingHand, Grip))
     	{
@@ -1110,7 +1132,7 @@ bool ATVRCharacter::AttemptToSecondaryGripObject(const FTransform& GripTransform
 		bool bHadSlotInRange = false;
 		FTransform SlotWorldTransform;
 		FName SlotName;
-		FName OverridePrefix = EName::NAME_None;
+		FName OverridePrefix = EName::None;
 		IVRGripInterface::Execute_ClosestGripSlotInRange(ObjectToGrip, Hit.ImpactPoint, true, bHadSlotInRange, SlotWorldTransform,  SlotName, Hand, OverridePrefix);
 		if(bHadSlotInRange)
 		{
@@ -1120,7 +1142,7 @@ bool ATVRCharacter::AttemptToSecondaryGripObject(const FTransform& GripTransform
 			FGrabObjectInfo GripInfo;
 			GripInfo.GripTransform = RelativeGripTransform;
 			GripInfo.ObjectToGrip = ObjectToGrip;
-			GripInfo.GripBoneName = EName::NAME_None;
+			GripInfo.GripBoneName = EName::None;
 			GripInfo.SlotName = SlotName;
 			GripInfo.bIsSlotGrip = true;
 			GripInfo.bIsSecondaryGrip = true;
@@ -1144,16 +1166,14 @@ bool ATVRCharacter::AttemptToPrimaryGripObject(const FTransform& GripTransform, 
 	bool bHadSlotInRange = false;
 	FTransform SlotWorldTransform;
 	FName SlotName;
-	IVRGripInterface::Execute_ClosestGripSlotInRange(ObjectToGrip, Hit.ImpactPoint, false, bHadSlotInRange, SlotWorldTransform,  SlotName, Hand, EName::NAME_None);
+	IVRGripInterface::Execute_ClosestGripSlotInRange(ObjectToGrip, Hit.ImpactPoint, false, bHadSlotInRange, SlotWorldTransform,  SlotName, Hand, EName::None);
 	FTransform RelativeGripTransform;
 	if(bHadSlotInRange)
 	{
-		RelativeGripTransform = GripTransform.GetRelativeTransform(SlotWorldTransform);
-		RelativeGripTransform.SetScale3D(FVector(1.f, 1.f, 1.f));
-		// if(Hand->bOffsetByControllerProfile)
-		// {
-		// 	RelativeGripTransform=UVRGlobalSettings::AdjustTransformByControllerProfile(EName::NAME_None, RelativeGripTransform, HandType == EControllerHand::Right);
-		// }			
+		// correct slot
+		// x:0, y:5, z:90 -> x:0, y:60, z:90
+		RelativeGripTransform = GripTransform.GetRelativeTransform( SlotWorldTransform);
+		RelativeGripTransform.SetScale3D(FVector(1.f, 1.f, 1.f));		
 	}
 	else
 	{
@@ -1166,7 +1186,7 @@ bool ATVRCharacter::AttemptToPrimaryGripObject(const FTransform& GripTransform, 
 	GripInfo.ObjectToGrip = ObjectToGrip;
 	GripInfo.bIsSlotGrip = bHadSlotInRange;
 	GripInfo.bIsSecondaryGrip = false;
-	GripInfo.GripBoneName = bHadSlotInRange ? Hit.BoneName : EName::NAME_None;
+	GripInfo.GripBoneName = bHadSlotInRange ? Hit.BoneName : EName::None;
 	GripInfo.SlotName = SlotName;
 	GripInfo.GripTransform = RelativeGripTransform;
 	TryGrabObject(GripInfo, HandType);
@@ -1488,19 +1508,20 @@ void ATVRCharacter::SampleGripVelocities()
 
 void ATVRCharacter::SampleGripVelocity(UGripMotionControllerComponent* MotionController, FBPLowPassPeakFilter& Filter)
 {
-	TArray<FBPActorGripInformation> AllGrips;
-	MotionController->GetAllGrips(AllGrips);
-	if(AllGrips.Num() > 0)
+	if(const auto Grip = MotionController->GetFirstActiveGrip())
 	{
 		FVector TransVel, AngularVel;
-		MotionController->GetPhysicsVelocities(AllGrips[0], AngularVel, TransVel);
+		MotionController->GetPhysicsVelocities(*Grip, AngularVel, TransVel);
 		Filter.AddSample(TransVel);
 	}
 	else // not necessary for a lot of applications, but we also sample the empty hand
 	{
-		Filter.AddSample(
-			GetGraspingHand(MotionController)->GetSkeletalMeshComponent()->GetPhysicsLinearVelocity()
-		);
+		EControllerHand HandType = EControllerHand::AnyHand;
+		MotionController->GetHandType(HandType);
+		UPrimitiveComponent* SampleComp = GetGraspingHand(MotionController) ?
+			GetGraspingHand(MotionController)->GetSkeletalMeshComponent() :
+			(HandType == EControllerHand::Left ? HandMeshLeft : HandMeshRight);
+		Filter.AddSample(SampleComp->GetPhysicsLinearVelocity());
 	}
 }
 
@@ -1637,27 +1658,22 @@ void ATVRCharacter::OnBoltReleaseReleased_Right()
 void ATVRCharacter::OnActionA_Pressed(UGripMotionControllerComponent* UsingHand)
 {
 	check(UsingHand);
-	TArray<FBPActorGripInformation> AllGrips;
-	FBPActorGripInformation GripInfo;
+	FBPActorGripInformation SecondaryGripInfo;
 	
-	UsingHand->GetAllGrips(AllGrips);
-	
-	const bool bIsPrimaryGrip = AllGrips.Num() > 0;
-	const bool bIsSecondaryGrip = GetOtherControllerHand(UsingHand)->GetIsSecondaryAttachment(UsingHand, GripInfo);
-	if(bIsPrimaryGrip)
+	if(const auto PrimaryGrip = UsingHand->GetFirstActiveGrip())
 	{		
-		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(AllGrips[0].GrippedObject))
+		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(PrimaryGrip->GrippedObject))
 		{
 			MyGun->OnMagReleasePressedFromPrimary();
 		}
-		else if(ATVRMagazine* MyMag = Cast<ATVRMagazine>(AllGrips[0].GrippedObject))
+		else if(ATVRMagazine* MyMag = Cast<ATVRMagazine>(PrimaryGrip->GrippedObject))
 		{
 			MyMag->OnMagReleasePressed();
 		}
 	}
-	else if(bIsSecondaryGrip)
+	else if(GetOtherControllerHand(UsingHand)->GetIsSecondaryAttachment(UsingHand, SecondaryGripInfo))
 	{
-		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(GripInfo.GrippedObject))
+		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(SecondaryGripInfo.GrippedObject))
 		{
 			if(!MyGun->OnSecondaryMagReleasePressed())
 			{
@@ -1686,16 +1702,11 @@ void ATVRCharacter::OnActionA_Pressed(UGripMotionControllerComponent* UsingHand)
 void ATVRCharacter::OnActionB_Pressed(UGripMotionControllerComponent* UsingHand)
 {
 	check(UsingHand);
-	TArray<FBPActorGripInformation> AllGrips;
-	FBPActorGripInformation GripInfo;
-	
-	UsingHand->GetAllGrips(AllGrips);
-	
-	const bool bIsPrimaryGrip = AllGrips.Num() > 0;
-	const bool bIsSecondaryGrip = GetOtherControllerHand(UsingHand)->GetIsSecondaryAttachment(UsingHand, GripInfo);
-	if(bIsPrimaryGrip)
+	FBPActorGripInformation SecondaryGripInfo;
+
+	if(const auto PrimaryGrip = UsingHand->GetFirstActiveGrip())
 	{		
-		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(AllGrips[0].GrippedObject))
+		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(PrimaryGrip->GrippedObject))
 		{
 			if(MyGun->HasBoltReleaseOnPrimaryGrip())
 			{
@@ -1703,9 +1714,9 @@ void ATVRCharacter::OnActionB_Pressed(UGripMotionControllerComponent* UsingHand)
 			}
 		}
 	}
-	else if(bIsSecondaryGrip)
+	else if(GetOtherControllerHand(UsingHand)->GetIsSecondaryAttachment(UsingHand, SecondaryGripInfo))
 	{
-		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(GripInfo.GrippedObject))
+		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(SecondaryGripInfo.GrippedObject))
 		{
 			MyGun->ToggleLaser(UsingHand);
 		}
@@ -1729,25 +1740,20 @@ void ATVRCharacter::OnActionB_Pressed(UGripMotionControllerComponent* UsingHand)
 void ATVRCharacter::OnActionA_Released(UGripMotionControllerComponent* UsingHand)
 {
 	check(UsingHand);
-	TArray<FBPActorGripInformation> AllGrips;
 	FBPActorGripInformation GripInfo;
 	
-	UsingHand->GetAllGrips(AllGrips);
-	
-	const bool bIsPrimaryGrip = AllGrips.Num() > 0;
-	const bool bIsSecondaryGrip = GetOtherControllerHand(UsingHand)->GetIsSecondaryAttachment(UsingHand, GripInfo);
-	if(bIsPrimaryGrip)
+	if(const auto PrimaryGrip = UsingHand->GetFirstActiveGrip())
 	{		
-		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(AllGrips[0].GrippedObject))
+		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(PrimaryGrip->GrippedObject))
 		{
 			MyGun->OnMagReleaseReleasedFromPrimary();
 		}
-		else if(ATVRMagazine* MyMag = Cast<ATVRMagazine>(AllGrips[0].GrippedObject))
+		else if(ATVRMagazine* MyMag = Cast<ATVRMagazine>(PrimaryGrip->GrippedObject))
 		{
 			MyMag->OnMagReleaseReleased();
 		}
 	}
-	else if(bIsSecondaryGrip)
+	else if(GetOtherControllerHand(UsingHand)->GetIsSecondaryAttachment(UsingHand, GripInfo))
 	{
 		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(GripInfo.GrippedObject))
 		{
@@ -1775,16 +1781,11 @@ void ATVRCharacter::OnActionA_Released(UGripMotionControllerComponent* UsingHand
 void ATVRCharacter::OnActionB_Released(UGripMotionControllerComponent* UsingHand)
 {
 	check(UsingHand);
-	TArray<FBPActorGripInformation> AllGrips;
-	FBPActorGripInformation GripInfo;
+	FBPActorGripInformation SecondaryGrip;
 	
-	UsingHand->GetAllGrips(AllGrips);
-	
-	const bool bHasPrimaryGrip = AllGrips.Num() > 0;
-	const bool bHasSecondaryGrip = GetOtherControllerHand(UsingHand)->GetIsSecondaryAttachment(UsingHand, GripInfo);
-	if(bHasPrimaryGrip)
+	if(const auto PrimaryGrip = UsingHand->GetFirstActiveGrip())
 	{		
-		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(AllGrips[0].GrippedObject))
+		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(PrimaryGrip->GrippedObject))
 		{
 			if(MyGun->HasBoltReleaseOnPrimaryGrip())
 			{
@@ -1792,9 +1793,9 @@ void ATVRCharacter::OnActionB_Released(UGripMotionControllerComponent* UsingHand
 			}
 		}
 	}
-	else if(bHasSecondaryGrip)
+	else if(GetOtherControllerHand(UsingHand)->GetIsSecondaryAttachment(UsingHand, SecondaryGrip))
 	{
-		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(GripInfo.GrippedObject))
+		if(ATVRGunBase* MyGun = Cast<ATVRGunBase>(SecondaryGrip.GrippedObject))
 		{
 			MyGun->OnSecondaryBoltReleaseReleased();
 		}
@@ -1831,13 +1832,11 @@ void ATVRCharacter::OnCycleFireMode_Right()
 
 void ATVRCharacter::OnCycleFireMode(UGripMotionControllerComponent* UsingHand)
 {
-	TArray<FBPActorGripInformation> AllGrips;
 	if(UsingHand != nullptr)
 	{
-		UsingHand->GetAllGrips(AllGrips);
-		if(AllGrips.Num() > 0)
+		if(const auto PrimaryGrip = UsingHand->GetFirstActiveGrip())
 		{
-			ATVRGunBase* MyGun = Cast<ATVRGunBase>(AllGrips[0].GrippedObject);
+			ATVRGunBase* MyGun = Cast<ATVRGunBase>(PrimaryGrip->GrippedObject);
 			if(MyGun != nullptr)
 			{
 				MyGun->OnCycleFiringMode();

@@ -6,9 +6,10 @@
 =============================================================================*/
 
 #include "CharacterMovementCompTypes.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(CharacterMovementCompTypes)
+
 #include "VRBaseCharacterMovementComponent.h"
 #include "VRBPDatatypes.h"
-#include "ParentRelativeAttachmentComponent.h"
 #include "VRBaseCharacter.h"
 #include "VRRootComponent.h"
 #include "VRPlayerController.h"
@@ -48,11 +49,10 @@ bool FSavedMove_VRBaseCharacter::CanCombineWith(const FSavedMovePtr& NewMove, AC
 {
 	FSavedMove_VRBaseCharacter* nMove = (FSavedMove_VRBaseCharacter*)NewMove.Get();
 
-
 	if (!nMove || (VRReplicatedMovementMode != nMove->VRReplicatedMovementMode))
 		return false;
 
-	if (ConditionalValues.MoveActionArray.MoveActions.Num() > 0 || nMove->ConditionalValues.MoveActionArray.MoveActions.Num() > 0)
+	if (!ConditionalValues.MoveActionArray.CanCombine() || !nMove->ConditionalValues.MoveActionArray.CanCombine())
 		return false;
 
 	if (!ConditionalValues.CustomVRInputVector.IsZero() || !nMove->ConditionalValues.CustomVRInputVector.IsZero())
@@ -62,10 +62,10 @@ bool FSavedMove_VRBaseCharacter::CanCombineWith(const FSavedMovePtr& NewMove, AC
 		return false;
 
 	// Hate this but we really can't combine if I am sending a new capsule height
-	if (!FMath::IsNearlyEqual(LFDiff.Z, nMove->LFDiff.Z))
+	if (!FMath::IsNearlyEqual(CapsuleHeight, nMove->CapsuleHeight))
 		return false;
 
-	if (!FVector2D(LFDiff.X, LFDiff.Y).IsZero() && !FVector2D(nMove->LFDiff.X, nMove->LFDiff.Y).IsZero() && !FVector::Coincident(LFDiff.GetSafeNormal2D(), nMove->LFDiff.GetSafeNormal2D(), AccelDotThresholdCombine))
+	if (!LFDiff.IsZero() && !nMove->LFDiff.IsZero() && !FVector::Coincident(LFDiff.GetSafeNormal(), nMove->LFDiff.GetSafeNormal(), AccelDotThresholdCombine))
 		return false;
 
 	return FSavedMove_Character::CanCombineWith(NewMove, Character, MaxDelta);
@@ -119,12 +119,12 @@ void FSavedMove_VRBaseCharacter::SetInitialPosition(ACharacter* C)
 		if (AVRBaseCharacter* BaseChar = Cast<AVRBaseCharacter>(C))
 		{
 			if (BaseChar->VRReplicateCapsuleHeight)
-				LFDiff.Z = BaseChar->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+				CapsuleHeight = BaseChar->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
 			else
-				LFDiff.Z = 0.0f;
+				CapsuleHeight = 0.0f;
 		}
 		else
-			LFDiff.Z = 0.0f;
+			CapsuleHeight = 0.0f;
 	}
 	else
 	{
@@ -172,6 +172,9 @@ void FSavedMove_VRBaseCharacter::CombineWith(const FSavedMove_Character* OldMove
 	// Changes in certain counters like JumpCurrentCount don't allow move combining, so no need to roll those back (they are the same).
 	InCharacter->JumpForceTimeRemaining = OldMove->JumpForceTimeRemaining;
 	InCharacter->JumpKeyHoldTime = OldMove->JumpKeyHoldTime;
+
+	// Merge if we had valid mergable move actions
+	ConditionalValues.MoveActionArray.MoveActions.Append(BaseSavedMovePending->ConditionalValues.MoveActionArray.MoveActions);
 }
 
 void FSavedMove_VRBaseCharacter::PostUpdate(ACharacter* C, EPostUpdateMode PostUpdateMode)
@@ -186,7 +189,17 @@ void FSavedMove_VRBaseCharacter::PostUpdate(ACharacter* C, EPostUpdateMode PostU
 		ConditionalValues.CustomVRInputVector = moveComp->CustomVRInputVector;
 		ConditionalValues.MoveActionArray = moveComp->MoveActionArray;
 		moveComp->MoveActionArray.Clear();
+
+		if (!moveComp->bUseClientControlRotation)
+		{
+			if (const USceneComponent* UpdatedComponent = moveComp->UpdatedComponent)
+			{
+				SavedControlRotation = UpdatedComponent->GetComponentRotation().Clamp();
+			}
+		}
 	}
+
+
 	//}
 	/*if (ConditionalValues.MoveAction.MoveAction != EVRMoveAction::VRMOVEACTION_None)
 	{
@@ -219,6 +232,7 @@ void FSavedMove_VRBaseCharacter::Clear()
 	VRCapsuleLocation = FVector::ZeroVector;
 	VRCapsuleRotation = FRotator::ZeroRotator;
 	LFDiff = FVector::ZeroVector;
+	CapsuleHeight = 0.0f;
 
 	ConditionalValues.CustomVRInputVector = FVector::ZeroVector;
 	ConditionalValues.RequestedVelocity = FVector::ZeroVector;
@@ -288,7 +302,8 @@ FVRCharacterNetworkMoveData::FVRCharacterNetworkMoveData() : FCharacterNetworkMo
 {
 	VRCapsuleLocation = FVector::ZeroVector;
 	LFDiff = FVector::ZeroVector;
-	VRCapsuleRotation = 0;
+	CapsuleHeight = 0.f;
+	VRCapsuleRotation = 0.f;
 	ReplicatedMovementMode = EVRConjoinedMovementModes::C_MOVE_MAX;
 }
 
@@ -310,6 +325,7 @@ void FVRCharacterNetworkMoveData::ClientFillNetworkMoveData(const FSavedMove_Cha
 		// #TODO: Roll these into the conditionals
 		VRCapsuleLocation = SavedMove->VRCapsuleLocation;
 		LFDiff = SavedMove->LFDiff;
+		CapsuleHeight = SavedMove->CapsuleHeight;
 		VRCapsuleRotation = FRotator::CompressAxisToShort(SavedMove->VRCapsuleRotation.Yaw);
 	}
 }
@@ -349,8 +365,21 @@ bool FVRCharacterNetworkMoveData::Serialize(UCharacterMovementComponent& Charact
 
 	ACharacter* CharacterOwner = CharacterMovement.GetCharacterOwner();
 
-	bool bCanRepRollAndPitch = (CharacterOwner && (CharacterOwner->bUseControllerRotationRoll || CharacterOwner->bUseControllerRotationPitch));
-	bool bRepRollAndPitch = bCanRepRollAndPitch && (Roll != 0 || Pitch != 0);
+	bool bRepRollAndPitch = false;
+
+	if (AVRBaseCharacter* BaseChar = Cast<AVRBaseCharacter>(CharacterOwner))
+	{
+		if (BaseChar->VRMovementReference && !BaseChar->VRMovementReference->bUseClientControlRotation)
+		{
+			bRepRollAndPitch = (Roll != 0 || Pitch != 0);
+		}
+	}
+	else
+	{
+		bool bCanRepRollAndPitch = (CharacterOwner && (CharacterOwner->bUseControllerRotationRoll || CharacterOwner->bUseControllerRotationPitch));
+		bRepRollAndPitch = bCanRepRollAndPitch && (Roll != 0 || Pitch != 0);
+	}
+
 	Ar.SerializeBits(&bRepRollAndPitch, 1);
 
 	if (bRepRollAndPitch)
@@ -398,15 +427,15 @@ bool FVRCharacterNetworkMoveData::Serialize(UCharacterMovementComponent& Charact
 	VRCapsuleLocation.NetSerialize(Ar, PackageMap, bLocalSuccess);
 	Ar << VRCapsuleRotation;
 
-	if (MoveType == ENetworkMoveType::NewMove)
-	{
+	// Location is only used for error checking, so only save for the final move.
+	//if (MoveType == ENetworkMoveType::NewMove)
+	//{
 		Location.NetSerialize(Ar, PackageMap, bLocalSuccess);
+	//}
 
-		// Location, relative movement base, and ending movement mode is only used for error checking, so only save for the final move.
-		SerializeOptionalValue<UPrimitiveComponent*>(bIsSaving, Ar, MovementBase, nullptr);
-		SerializeOptionalValue<FName>(bIsSaving, Ar, MovementBaseBoneName, NAME_None);
-		//SerializeOptionalValue<uint8>(bIsSaving, Ar, MovementMode, MOVE_Walking); // Epic has this like this too, but it is bugged and killing movements
-	}
+	// Movement base needs to always send now since they allow for relative based velocity
+	SerializeOptionalValue<UPrimitiveComponent*>(bIsSaving, Ar, MovementBase, nullptr);
+	SerializeOptionalValue<FName>(bIsSaving, Ar, MovementBaseBoneName, NAME_None);
 
 	bool bHasReplicatedMovementMode = ReplicatedMovementMode != EVRConjoinedMovementModes::C_MOVE_MAX;
 	Ar.SerializeBits(&bHasReplicatedMovementMode, 1);
@@ -416,7 +445,7 @@ bool FVRCharacterNetworkMoveData::Serialize(UCharacterMovementComponent& Charact
 		// Increased to 6 bits for 64 total elements instead of 16
 		Ar.SerializeBits(&ReplicatedMovementMode, 6);
 	}
-	else if (!bIsSaving)
+	else if(!bIsSaving)
 	{
 		ReplicatedMovementMode = EVRConjoinedMovementModes::C_MOVE_MAX;
 	}
@@ -425,7 +454,39 @@ bool FVRCharacterNetworkMoveData::Serialize(UCharacterMovementComponent& Charact
 	ConditionalMoveReps.NetSerialize(Ar, PackageMap, bLocalSuccess);
 
 	//VRCapsuleLocation.NetSerialize(Ar, PackageMap, bLocalSuccess);
-	LFDiff.NetSerialize(Ar, PackageMap, bLocalSuccess);
+	if (AVRBaseCharacter* VRChar = Cast<AVRBaseCharacter>(CharacterOwner))
+	{
+		if (!VRChar->bRetainRoomscale)
+		{
+			SerializePackedVector<10000, 32>(LFDiff, Ar);
+		}
+		else
+		{
+			SerializePackedVector<100, 30>(LFDiff, Ar);
+		}
+	}
+	else
+	{
+		SerializePackedVector<100, 30>(LFDiff, Ar);
+	}
+
+	bool bHasCapsuleHeight = CapsuleHeight > 0.f;
+	Ar.SerializeBits(&bHasCapsuleHeight, 1);
+
+	if (bHasCapsuleHeight)
+	{
+		// This is 0.0 - 512.0, using compression to get it smaller, 8 bits = max 256 + 1 bit for sign and 7 bits precision for 128 / full 2 digit precision
+		if (Ar.IsSaving())
+		{
+			WriteFixedCompressedFloat<1024, 18>(CapsuleHeight, Ar);
+		}
+		else
+		{
+			ReadFixedCompressedFloat<1024, 18>(CapsuleHeight, Ar);
+		}
+	}
+
+	//LFDiff.NetSerialize(Ar, PackageMap, bLocalSuccess);
 	//Ar << VRCapsuleRotation;
 
 	return !Ar.IsError();
@@ -438,6 +499,29 @@ void FVRCharacterMoveResponseDataContainer::ServerFillResponseData(const UCharac
 
 	if (const UVRBaseCharacterMovementComponent* BaseMovecomp = Cast<const UVRBaseCharacterMovementComponent>(&CharacterMovement))
 	{
+		// #TODO: This is set in the pending adjustment now in 5.1
+		//bHasRotation = CharacterMovement.ShouldCorrectRotation();
 		bHasRotation = !BaseMovecomp->bUseClientControlRotation;
+	}
+}
+
+FScopedMeshBoneUpdateOverrideVR::FScopedMeshBoneUpdateOverrideVR(USkeletalMeshComponent* Mesh, EKinematicBonesUpdateToPhysics::Type OverrideSetting)
+	: MeshRef(Mesh)
+{
+	if (MeshRef)
+	{
+		// Save current state.
+		SavedUpdateSetting = MeshRef->KinematicBonesUpdateType;
+		// Override bone update setting.
+		MeshRef->KinematicBonesUpdateType = OverrideSetting;
+	}
+}
+
+FScopedMeshBoneUpdateOverrideVR::~FScopedMeshBoneUpdateOverrideVR()
+{
+	if (MeshRef)
+	{
+		// Restore bone update flag.
+		MeshRef->KinematicBonesUpdateType = SavedUpdateSetting;
 	}
 }

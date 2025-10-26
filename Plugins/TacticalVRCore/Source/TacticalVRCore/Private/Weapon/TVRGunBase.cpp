@@ -11,6 +11,9 @@
 
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Libraries/TVRFunctionLibrary.h"
+
+#include "GripScripts/GS_GunTools.h"
 
 #include "Player/TVREquipmentPoint.h"
 #include "Settings/TVRCoreGameplaySettings.h"
@@ -35,6 +38,7 @@
 #include "Weapon/Component/TVRChargingHandleInterface.h"
 #include "Weapon/Component/TVREjectionPort.h"
 #include "Weapon/Component/TVRGunFireComponent.h"
+#include "Weapon/Component/TVRMagazineWell.h"
 
 FName ATVRGunBase::PrimarySlotName(TEXT("Primary"));
 FName ATVRGunBase::SecondarySlotName(TEXT("Secondary"));
@@ -82,7 +86,7 @@ ATVRGunBase::ATVRGunBase(const FObjectInitializer& OI) : Super(OI)
 	
     bIsBoltLocked = false;
 	
-    bHandSwapToPrimaryGripSlot = false;
+	HandSwapType = ETVRHandSwapType::KeepWorldPosition;
     bHasLastRoundBoltHoldOpen = true;
 	bDoesCycle = true;
 
@@ -140,6 +144,13 @@ void ATVRGunBase::OnConstruction(const FTransform& Transform)
 	
 	OnColorVariantChanged(ColorVariant);
 	InitAttachmentPoints();
+
+	TArray<UTVRMagazineWell*> MagWells;
+	GetComponents<UTVRMagazineWell>(MagWells);
+	for(const auto MW : MagWells)
+	{
+		MW->OnConstruction();
+	}
 
 	if(bForceRecompile)
 	{
@@ -277,7 +288,7 @@ void ATVRGunBase::TickBolt(float DeltaSeconds)
 		
 		if(PrevBoltMovePct <= (1.f - BoltProgressFeedRound) && BoltMovePct > (1.f - BoltProgressFeedRound))
 		{
-			TryChamberNewRound();
+			TryFeedRoundFromMagazine();
 		}
 
 		if(BoltProgress <= 0.f) // unlikely to happen, but just to make sure, we reset value on bolt closure
@@ -373,7 +384,7 @@ void ATVRGunBase::CheckBoltEvents(float PreviousBoltProgress)
 		
 	if(PreviousBoltProgress >= BoltProgressFeedRound && BoltProgress < BoltProgressFeedRound)
 	{
-		TryChamberNewRound();
+		TryFeedRoundFromMagazine();
 	}
 }
 
@@ -475,8 +486,7 @@ bool ATVRGunBase::RequestsSocketing_Implementation(USceneComponent*& ParentToSoc
                                                    FTransform_NetQuantize& RelativeTransform)
 {
 	// primary was released, lets check whether there is a secondary:
-	ATVRCharacter* CharacterOwner = Cast<ATVRCharacter>(GetOwner());
-	if(CharacterOwner)
+	if(const auto CharacterOwner = Cast<ATVRCharacter>(GetOwner()))
 	{
 		TArray<UTVREquipmentPoint*> Slots;
 		CharacterOwner->GetComponents<UTVREquipmentPoint>(Slots);
@@ -596,7 +606,7 @@ void ATVRGunBase::SetCollisionProfile_Implementation(FName NewProfile)
 
 	if(GetMagInterface())
 	{
-		GetMagInterface()->SetMagazineCollisionProfile(NewProfile);
+		ITVRMagazineInterface::Execute_SetMagazineCollisionProfile(GetMagInterface(), NewProfile);
 	}
 
 	for(UTVRAttachmentPoint* TestPoint : AttachmentPoints)
@@ -616,7 +626,7 @@ void ATVRGunBase::OnFullyDropped(ATVRCharacter* GrippingCharacter, UGripMotionCo
 	SetOwner(nullptr);
 	if(GetMagInterface())
 	{
-		GetMagInterface()->OnOwnerGripReleased(GrippingCharacter, GrippingHand);
+		ITVRMagazineInterface::Execute_OnOwnerGripReleased(GetMagInterface(), GrippingCharacter, GrippingHand);
 	}
 	BPOnFullyDropped();
 }
@@ -671,6 +681,18 @@ void ATVRGunBase::SetColorVariant(uint8 newVariant)
 	OnColorVariantChanged(ColorVariant);
 }
 
+void ATVRGunBase::OnAttachmentAttached(ATVRWeaponAttachment* NewAttachment, UTVRAttachmentPoint* AttachmentPoint)
+{
+	Attachments.AddUnique(NewAttachment);
+	Attachments.Remove(nullptr);
+}
+
+void ATVRGunBase::OnAttachmentDetached(ATVRWeaponAttachment* OldAttachment, UTVRAttachmentPoint* AttachmentPoint)
+{
+	Attachments.Remove(OldAttachment);
+	Attachments.Remove(nullptr);
+}
+
 void ATVRGunBase::SetBoltMesh(UStaticMeshComponent* NewMesh)
 {
 	BoltMesh = NewMesh;
@@ -697,8 +719,11 @@ void ATVRGunBase::OnGrip_Implementation(UGripMotionControllerComponent* Gripping
         // todo: deny free gripping
         const ATVRGunBase* DefaultCDO = GetDefault<ATVRGunBase>(GetClass());
         VRGripInterfaceSettings.SecondaryGripType = DefaultCDO->VRGripInterfaceSettings.SecondaryGripType;
-    	PrimaryHand = GrippingHand;
-    	TriggerComponent->ActivateTrigger(GrippingHand);
+    	PrimaryController = GrippingHand;
+    	if(GripInfo.SlotName == PrimarySlotName)
+    	{
+    		TriggerComponent->ActivateTrigger(GrippingHand);
+    	}
     }
     else
     {
@@ -743,7 +768,7 @@ void ATVRGunBase::OnGripRelease_Implementation(UGripMotionControllerComponent* G
         OnBoltReleaseReleased();
         OnStopFire();
     	TriggerComponent->DeactivateTrigger();
-    	PrimaryHand = nullptr;
+    	PrimaryController = nullptr;
     }
     
     Super::OnGripRelease_Implementation(GrippingHand, GripInfo, bWasSocketed);
@@ -841,12 +866,16 @@ void ATVRGunBase::OnEndSecondaryUsed_Implementation()
 void ATVRGunBase::ReInitSecondary(UGripMotionControllerComponent* GrippingHand,
                                   const FBPActorGripInformation& GripInfo)
 {
-    if(GrippingHand->HasGripAuthority(GripInfo) && SavedSecondaryHand.Get() != GrippingHand)
+    if(GrippingHand->HasGripAuthority(GripInfo) && SavedSecondaryHand != GrippingHand)
     {
-        if(SavedSecondaryHand.IsValid() && SavedSecondaryHand.Get() != nullptr)
+        if(SavedSecondaryHand != nullptr)
         {
-            UGripMotionControllerComponent* OldSecondaryHand = SavedSecondaryHand.Get();
+            UGripMotionControllerComponent* OldSecondaryHand = SavedSecondaryHand;
             const FTransform OldSecondaryTransform = SavedSecondaryHandRelTransform;
+        	if(const auto GraspingHand = UTVRFunctionLibrary::GetGraspingHandForController(SavedSecondaryHand))
+        	{
+        		GraspingHand->bPendingReinitSecondary = true;
+        	}
             SavedSecondaryHand->DropObject(this, 0, false, FVector::ZeroVector, FVector::ZeroVector);
             GrippingHand->AddSecondaryAttachmentToGrip(GripInfo, OldSecondaryHand, OldSecondaryTransform, true, 0.f, true, SavedSecondarySlotName);
         }
@@ -861,51 +890,72 @@ bool ATVRGunBase::HandleHandSwap(UGripMotionControllerComponent* GrippingHand, c
 	// todo: handle hand swap when magazine is grabbed and dropping
     if(GripInfo.SecondaryGripInfo.bHasSecondaryAttachment)
     {
-        UGripMotionControllerComponent* SecondaryHand = Cast<UGripMotionControllerComponent>(GripInfo.SecondaryGripInfo.SecondaryAttachment);
+        const auto SecondaryHand = Cast<UGripMotionControllerComponent>(GripInfo.SecondaryGripInfo.SecondaryAttachment);
         if(SecondaryHand != nullptr && SecondaryHand->HasGripAuthority(this))
         {
             SavedSecondaryHand = SecondaryHand;
             SavedSecondaryHandRelTransform = GripInfo.SecondaryGripInfo.SecondaryRelativeTransform;
-        	SavedSecondarySlotName = GripInfo.SecondaryGripInfo.bIsSlotGrip ? GripInfo.SecondaryGripInfo.SecondarySlotName : NAME_None;
+        	SavedSecondarySlotName = GripInfo.SecondaryGripInfo.bIsSlotGrip ? GripInfo.SecondaryGripInfo.SecondarySlotName : EName::None;
+
+        	switch(HandSwapType)
+        	{
+        	case ETVRHandSwapType::KeepWorldPosition:
+        		{
+        			bool bHadSecondarySlotInRange = false;
+        			FTransform SecondarySlotTransform;
+        			FName TempSecondaryName = EName::None;
         	
-            bool bHadSecondarySlotInRange = false;
-            FTransform SecondarySlotTransform;
-            FName TempSecondaryName = EName::NAME_None;
+        			Execute_ClosestGripSlotInRange(this, SavedSecondaryHand->GetComponentLocation(), true,
+						bHadSecondarySlotInRange, SecondarySlotTransform, TempSecondaryName,
+						SavedSecondaryHand, EName::None
+					);
+        		
+        			if(bHadSecondarySlotInRange)
+        			{
+        				const FTransform RelativeSocketTransform =
+        					SavedSecondaryHand->ConvertToControllerRelativeTransform(GetActorTransform());
+        					// GetActorTransform().GetRelativeTransform(SavedSecondaryHand->GetComponentTransform());
+        				if(const auto GraspingHand = UTVRFunctionLibrary::GetGraspingHandForController(SavedSecondaryHand))
+        				{
+        					GraspingHand->PendingHandSwap = ETVRHandSwapType::KeepWorldPosition;
+        					const auto HandTF = GraspingHand->GetSkeletalMeshComponent()->GetComponentTransform();
+        					GraspingHand->PendingRelativeMeshTransform = HandTF * GetActorTransform().Inverse();
+        					GraspingHand->SnapShotCustomPose();
+        					GraspingHand->FreezePose();
+						}
+        				SavedSecondaryHand->GripObjectByInterface(this, RelativeSocketTransform,
+							true, EName::None,
+							SavedSecondarySlotName, true);
+        				VRGripInterfaceSettings.bAllowMultipleGrips = true;
+        				return true;
+        			}
+        		}
+        		break;
+        	case ETVRHandSwapType::GripPrimary:
+        		{
+        			if(const auto MyChar = Cast<ATVRCharacter>(SavedSecondaryHand->GetOwner()))
+        			{
+        				bool bHadSlotInRange = false;
+        				FName SlotName = EName::None;        	
+        				FTransform SlotTransform;
         	
-            Execute_ClosestGripSlotInRange(this, SavedSecondaryHand->GetComponentLocation(), true,
-	            bHadSecondarySlotInRange, SecondarySlotTransform, TempSecondaryName,
-	            SavedSecondaryHand.Get(), EName::NAME_None
-            );
-        	
-            bool bHadSlotInRange = false;
-            FName SlotName = EName::NAME_None;        	
-        	FTransform SlotTransform;
-        	
-            Execute_ClosestGripSlotInRange(this, GrippingHand->GetComponentLocation(), false,
-                bHadSlotInRange, SlotTransform, SlotName,
-                SavedSecondaryHand.Get(), EName::NAME_None
-            );
-        	
-            if(bHadSecondarySlotInRange && !bHandSwapToPrimaryGripSlot)
-            {
-                const FTransform RelativeSocketTransform = GetActorTransform().GetRelativeTransform(SecondarySlotTransform);
-                SavedSecondaryHand->GripObjectByInterface(this, RelativeSocketTransform,
-                	true, EName::NAME_None,
-                	SavedSecondarySlotName, true);
-                VRGripInterfaceSettings.bAllowMultipleGrips = true;
-                return true;
-            }
-            if (bHandSwapToPrimaryGripSlot)
-            {
-                ATVRCharacter* MyChar = Cast<ATVRCharacter>(SavedSecondaryHand->GetOwner());
-                if(MyChar)
-                {
-                    // FTransform SocketTransformWS = GetPrimaryHandSocket()->GetHandSocketTransform(SavedSecondaryHand.Get());
-                	const FTransform RelativeSocketTransform = GetActorTransform().GetRelativeTransform(SlotTransform);
-                    SavedSecondaryHand->GripObjectByInterface(this, RelativeSocketTransform, true, EName::NAME_None, PrimarySlotName, true);
-                	return true;
-                }
-            }
+        				Execute_ClosestGripSlotInRange(this, GrippingHand->GetComponentLocation(), false,
+							bHadSlotInRange, SlotTransform, SlotName,
+							SavedSecondaryHand, EName::None
+						);
+                	
+        				// FTransform SocketTransformWS = GetPrimaryHandSocket()->GetHandSocketTransform(SavedSecondaryHand.Get());
+        				const FTransform RelativeSocketTransform = GetActorTransform().GetRelativeTransform(SlotTransform);
+        				SavedSecondaryHand->GripObjectByInterface(
+							this, RelativeSocketTransform, true,
+							EName::None,
+							PrimarySlotName,
+							true);
+        				return true;
+        			}
+        		}
+        		break;
+        	}
         }
     }
     SavedSecondaryHand = nullptr;
@@ -950,13 +1000,10 @@ void ATVRGunBase::AddRecoil()
 	FVector RecoilImpulseToApply = RecoilImpulse;
 	FVector AngularRecoilImpulseToApply = RecoilAngularImpulse;
 
-	for(const auto AttachPoint: AttachmentPoints)
+	for(const auto LoopWPNA: GetAttachments())
 	{
-		if(const auto LoopWPNA = AttachPoint->GetCurrentAttachment())
-		{
-			RecoilImpulseToApply *= LoopWPNA->GetRecoilModifier();
-			AngularRecoilImpulseToApply *= LoopWPNA->GetRecoilModifier();
-		}
+		RecoilImpulseToApply *= LoopWPNA->GetRecoilModifier();
+		AngularRecoilImpulseToApply *= LoopWPNA->GetRecoilModifier();
 	}
 	
     if(VRGripInterfaceSettings.bIsHeld)
@@ -1081,7 +1128,7 @@ void ATVRGunBase::OnMagReleasePressed()
 {
 	if(GetMagInterface())
 	{
-		GetMagInterface()->OnMagReleasePressed();
+		ITVRMagazineInterface::Execute_OnMagReleasePressed(GetMagInterface(), false);
 	}
 	BP_OnMagReleasePressed();
 }
@@ -1090,7 +1137,7 @@ void ATVRGunBase::OnMagReleaseReleased()
 {
     if(GetMagInterface())
     {
-        GetMagInterface()->OnMagReleaseReleased();
+		ITVRMagazineInterface::Execute_OnMagReleaseReleased(GetMagInterface(), false);
     }
     BP_OnMagReleaseReleased();
 }
@@ -1134,10 +1181,10 @@ bool ATVRGunBase::OnSecondaryBoltReleaseReleased()
 
 void ATVRGunBase::InitMagInterface_Implementation()
 {
-	const auto FoundComp = GetComponentByClass(UTVRMagazineCompInterface::StaticClass());
-	if(FoundComp)
+	const auto FoundComp = GetComponentsByInterface(UTVRMagazineInterface::StaticClass());	
+	if(FoundComp.Num() > 0)
 	{
-		MagInterface = Cast<UTVRMagazineCompInterface>(FoundComp);
+		MagInterface = FoundComp[0];
 	}
 }
 
@@ -1185,26 +1232,34 @@ void ATVRGunBase::EjectRound(bool bSpent)
     }
 }
 
-bool ATVRGunBase::TryChamberNewRound()
+bool ATVRGunBase::TryFeedRoundFromMagazine()
 {
-    if(!GetFiringComponent()->HasRoundLoaded() && GetMagInterface())
+	if(!GetFiringComponent()->HasRoundLoaded() && GetMagInterface())
+	{
+		if(const auto NewCartridge = ITVRMagazineInterface::Execute_TryFeedAmmo(GetMagInterface()))
+		{
+			return TryChamberNewRound(NewCartridge);
+		}
+	}
+	return false;
+}
+
+bool ATVRGunBase::TryChamberNewRound(TSubclassOf<ATVRCartridge> NewCartridge)
+{
+    if(FiringComponent->TryLoadCartridge(NewCartridge))
     {
-    	const auto NewCartridge = GetMagInterface()->TryFeedAmmo();
-    	if(FiringComponent->TryLoadCartridge(NewCartridge))
+    	if(LoadedBullet)
     	{
-    		if(LoadedBullet)
+    		auto const CartridgeCDO = NewCartridge->GetDefaultObject<ATVRCartridge>();
+    		UStaticMesh* RoundMesh = CartridgeCDO->GetStaticMeshComponent()->GetStaticMesh();
+    		if(RoundMesh != LoadedBullet->GetStaticMesh())
     		{
-    			auto const CartridgeCDO = NewCartridge->GetDefaultObject<ATVRCartridge>();
-    			UStaticMesh* RoundMesh = CartridgeCDO->GetStaticMeshComponent()->GetStaticMesh();
-    			if(RoundMesh != LoadedBullet->GetStaticMesh())
-    			{
-    				LoadedBullet->SetStaticMesh(RoundMesh);
-    			}
-    			LoadedBullet->SetVisibility(true);
+    			LoadedBullet->SetStaticMesh(RoundMesh);
     		}
-    		OnChamberRound();
-    		return true;
+    		LoadedBullet->SetVisibility(true);
     	}
+    	OnChamberRound();
+    	return true;
     }
     return false;
 }
@@ -1242,17 +1297,27 @@ void ATVRGunBase::OnBoltReleaseReleasedFromPrimary()
 void ATVRGunBase::OnBoltReleasePressed()
 {
     bBoltReleasePressed = true;
-    if(IsBoltLocked())
-    {
-        OnBoltReleased();
-    }
-    BP_OnBoltReleasePressed();
+	if(PrimaryController)
+	{
+		if(const auto Grip = PrimaryController->GetFirstActiveGrip())
+		{
+			
+		}
+		if(IsBoltLocked())
+		{
+			OnBoltReleased();
+		}
+			BP_OnBoltReleasePressed();
+		}
 }
 
 void ATVRGunBase::OnBoltReleaseReleased()
 {
-    bBoltReleasePressed = false;
-    BP_OnBoltReleaseReleased();
+	if(bBoltReleasePressed)
+	{		
+		bBoltReleasePressed = false;
+		BP_OnBoltReleaseReleased();
+	}
 }
 
 void ATVRGunBase::OnCycleFiringMode()
@@ -1290,7 +1355,7 @@ bool ATVRGunBase::IsMagReleasePressed() const
 {
     if(GetMagInterface())
     {
-        return GetMagInterface()->IsMagReleasePressed();
+        return ITVRMagazineInterface::Execute_IsMagReleasePressed(GetMagInterface());
     }
     return false;
 }
@@ -1374,7 +1439,10 @@ void ATVRGunBase::OnBoltClosed()
 
 void ATVRGunBase::LockBoltIfNecessary()
 {
-	const bool bShouldLastRoundBHO = HasLastRoundBoltHoldOpen() && GetMagInterface() && GetMagInterface()->CanBoltLock() &&  !GetFiringComponent()->HasRoundLoaded();
+	const bool bShouldLastRoundBHO = HasLastRoundBoltHoldOpen() &&
+		GetMagInterface() &&
+		ITVRMagazineInterface::Execute_CanBoltLock(GetMagInterface()) &&
+		!GetFiringComponent()->HasRoundLoaded();
 	if((bShouldLastRoundBHO || ShouldLockBolt()) && !IsBoltReleasePressed())
 	{
 		LockBolt();
@@ -1383,7 +1451,11 @@ void ATVRGunBase::LockBoltIfNecessary()
 
 void ATVRGunBase::UnlockBoltIfNecessary()
 {
-	const bool bUndoBHO = HasLastRoundBoltHoldOpen() && (!GetMagInterface() || !GetMagInterface()->CanBoltLock() || GetFiringComponent()->HasRoundLoaded());
+	const bool bUndoBHO = HasLastRoundBoltHoldOpen() && (
+		!GetMagInterface() ||
+		!ITVRMagazineInterface::Execute_CanBoltLock(GetMagInterface()) ||
+		GetFiringComponent()->HasRoundLoaded()
+	);
 	const bool bUnlockBoltOverride = !HasLastRoundBoltHoldOpen() && !ShouldLockBolt();
 	if(IsBoltLocked() && (bUndoBHO || bUnlockBoltOverride))
 	{

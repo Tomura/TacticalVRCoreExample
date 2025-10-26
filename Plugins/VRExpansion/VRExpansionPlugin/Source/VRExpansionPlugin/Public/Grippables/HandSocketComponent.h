@@ -3,21 +3,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GripMotionControllerComponent.h"
-#include "VRBPDatatypes.h"
-#include "VRGripInterface.h"
-#include "VRExpansionFunctionLibrary.h"
 #include "GameplayTagContainer.h"
 #include "GameplayTagAssetInterface.h"
 #include "Components/SceneComponent.h"
-#include "Components/SkeletalMeshComponent.h"
-#include "Components/PoseableMeshComponent.h"
-#include "Animation/AnimSequence.h"
 #include "Animation/AnimInstance.h"
-#include "Animation/AnimInstanceProxy.h"
-#include "Animation/PoseSnapshot.h"
 #include "Misc/Guid.h"
 #include "HandSocketComponent.generated.h"
+
+class USkeletalMeshComponent;
+class UPoseableMeshComponent;
+class USkeletalMesh;
+class UGripMotionControllerComponent;
+class UAnimSequence;
+struct FPoseSnapshot;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogVRHandSocketComponent, Log, All);
 
@@ -45,7 +43,7 @@ private:
 };
 
 
-UENUM()
+UENUM(BlueprintType)
 namespace EVRAxis
 {
 	enum Type
@@ -102,11 +100,11 @@ public:
 	//static get socket compoonent
 
 	//Axis to mirror on for this socket
-	UPROPERTY(EditDefaultsOnly, Category = "Hand Socket Data|Mirroring|Advanced")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data|Mirroring|Advanced")
 		TEnumAsByte<EVRAxis::Type> MirrorAxis;
 
 	// Axis to flip on when mirroring this socket
-	UPROPERTY(VisibleDefaultsOnly, Category = "Hand Socket Data|Mirroring|Advanced")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data|Mirroring|Advanced")
 		TEnumAsByte<EVRAxis::Type> FlipAxis;
 
 	// Relative placement of the hand to this socket
@@ -116,6 +114,7 @@ public:
 	// Target Slot Prefix
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data")
 		FName SlotPrefix;
+	
 
 	// If true the hand meshes relative transform will be de-coupled from the hand socket
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Hand Socket Data")
@@ -125,6 +124,16 @@ public:
 	// Will act like free gripping but the mesh will snap into position
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data")
 		bool bOnlySnapMesh;
+
+	// If true the end user should only pull the hand pose, not its transform from this component
+	// This is up to the end user to make use of as its part of the query steps.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data")
+		bool bOnlyUseHandPose;
+
+	// If true we will not create the mesh relative transform using the attach socket we are attached too
+	// Useful in cases where you aren't doing per bone gripping but want the socket to follow a bone that is animating
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data")
+		bool bIgnoreAttachBone;
 
 	// If true then this socket is left hand dominant and will flip for the right hand instead
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hand Socket Data")
@@ -139,21 +148,30 @@ public:
 		bool bOnlyFlipRotation;
 
 	// If true then this hand socket will always be considered "in range" and checked against others for lowest distance
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data|Searching")
 		bool bAlwaysInRange;
 
 	// If true and there are multiple hand socket components in range with this setting
 	// Then the default behavior will compare closest rotation on them all to pick one
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data|Searching")
 		bool bMatchRotation;
 
 	// If true then the hand socket will not be considered for search operations
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data|Control")
 		bool bDisabled;
+
+	/*** 
+	//	If true then the hand socket will be locked in place during gameplay and not moved with the actor (saving performance)
+	//  Generally you want this unless you are moving a hand socket manually during play for custom grip offsetting logic
+	//  If you need the relative location of the hand socket for game logic, get the LockedRelativeTransform variable if bLockInPlace is enabled.
+	//  Defaulted off currently for bug testing
+	***/
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hand Socket Data|Control")
+		bool bLockInPlace;
 
 	// Snap distance to use if you want to override the defaults.
 	// Will be ignored if == 0.0f or bAlwaysInRange is true
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data|Searching")
 		float OverrideDistance;
 
 	// If true we are expected to have a list of custom deltas for bones to overlay onto our base pose
@@ -167,13 +185,27 @@ public:
 	// Primary hand animation, for both hands if they share animations, right hand if they don't
 	// If using a custom pose delta this is expected to be the base pose
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Animation")
-		UAnimSequence* HandTargetAnimation;
+		TObjectPtr<UAnimSequence> HandTargetAnimation;
 
 	// Scale to apply when mirroring the hand, adjust to visualize your off hand correctly
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Visualization")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Socket Data|Mirroring")
 		FVector MirroredScale;
 
-	FTransform GetBoneTransformAtTime(UAnimSequence* MyAnimSequence, /*float AnimTime,*/ int BoneIdx, bool bUseRawDataOnly);
+#if WITH_EDITORONLY_DATA
+	// If true we will attempt to only show editing widgets for bones matching the _l or _r postfixes
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Animation|Misc")
+		bool bFilterBonesByPostfix;
+
+	// The postfix to filter by
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Animation|Misc")
+		FString FilterPostfix;
+
+	// An array of bones to skip when looking to edit deltas, can help clean up the interaction if you have extra bones in the heirarchy
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Animation|Misc")
+		TArray<FName> BonesToSkip;
+
+	FTransform GetBoneTransformAtTime(UAnimSequence* MyAnimSequence, /*float AnimTime,*/ int BoneIdx, FName BoneName, bool bUseRawDataOnly);
+#endif
 
 	// Returns the base target animation of the hand (if there is one)
 	UFUNCTION(BlueprintCallable, Category = "Hand Socket Data")
@@ -199,6 +231,26 @@ public:
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Hand Socket Data", meta = (bIgnoreSelf = "true"))
 		static bool GetAnimationSequenceAsPoseSnapShot(UAnimSequence * InAnimationSequence, FPoseSnapshot& OutPoseSnapShot, USkeletalMeshComponent* TargetMesh = nullptr, bool bSkipRootBone = false, bool bFlipHand = false);
+
+
+	/**
+	* Gets all hand socket components in the entire level (this is a slow operation, DO NOT run this on tick)
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Hand Socket Data")
+		static void GetAllHandSocketComponents(TArray<UHandSocketComponent*>& OutHandSockets);
+
+	/**
+	* Gets all hand socket components within a set range of a world location (this is a slow operation, DO NOT run this on tick)
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Hand Socket Data")
+		static bool GetAllHandSocketComponentsInRange(FVector SearchFromWorldLocation, float SearchRange, TArray<UHandSocketComponent*>& OutHandSockets);
+
+	/**
+	* Gets the closest hand socket component within a set range of a world location (this is a slow operation, DO NOT run this on tick)
+	* Must check the output for validity
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Hand Socket Data")
+		static UHandSocketComponent* GetClosestHandSocketComponentInRange(FVector SearchFromWorldLocation, float SearchRange);
 
 	// Returns the target relative transform of the hand
 	//UFUNCTION(BlueprintCallable, Category = "Hand Socket Data")
@@ -318,42 +370,15 @@ public:
 	// Returns the target relative transform of the hand to the gripped object
 	// If you want the transform mirrored you need to pass in which hand is requesting the information
 	// If UseParentScale is true then we will scale the value by the parent scale (generally only for when not using absolute hand scale)
+	// If UseMirrorScale is true then we will mirror the scale on the hand by the hand sockets mirror scale when appropriate (not for fully body!)
+	// if UseMirrorScale is false than the resulting transform will not have mirroring scale added so you may have to break the transform.
 	UFUNCTION(BlueprintCallable, Category = "Hand Socket Data")
-	FTransform GetMeshRelativeTransform(bool bIsRightHand, bool bUseParentScale = false);
+	FTransform GetMeshRelativeTransform(bool bIsRightHand, bool bUseParentScale = false, bool bUseMirrorScale = false);
 
 	// Returns the defined hand socket component (if it exists, you need to valid check the return!
 	// If it is a valid return you can then cast to your projects base socket class and handle whatever logic you want
 	UFUNCTION(BlueprintCallable, Category = "Hand Socket Data")
-	static UHandSocketComponent *  GetHandSocketComponentFromObject(UObject * ObjectToCheck, FName SocketName)
-	{
-		if (AActor* OwningActor = Cast<AActor>(ObjectToCheck))
-		{
-			if (USceneComponent* OwningRoot = Cast<USceneComponent>(OwningActor->GetRootComponent()))
-			{
-				TArray<USceneComponent*> AttachChildren = OwningRoot->GetAttachChildren();
-				for (USceneComponent* AttachChild : AttachChildren)
-				{
-					if (AttachChild && AttachChild->IsA<UHandSocketComponent>() && AttachChild->GetFName() == SocketName)
-					{
-						return Cast<UHandSocketComponent>(AttachChild);
-					}
-				}
-			}
-		}
-		else if (USceneComponent* OwningRoot = Cast<USceneComponent>(ObjectToCheck))
-		{
-			TArray<USceneComponent*> AttachChildren = OwningRoot->GetAttachChildren();
-			for (USceneComponent* AttachChild : AttachChildren)
-			{
-				if (AttachChild && AttachChild->IsA<UHandSocketComponent>() && AttachChild->GetFName() == SocketName)
-				{
-					return Cast<UHandSocketComponent>(AttachChild);
-				}
-			}
-		}
-
-		return nullptr;
-	}
+	static UHandSocketComponent* GetHandSocketComponentFromObject(UObject* ObjectToCheck, FName SocketName);
 
 	virtual FTransform GetHandSocketTransform(UGripMotionControllerComponent* QueryController, bool bIgnoreOnlySnapMesh = false);
 
@@ -367,7 +392,8 @@ public:
 	bool bTickedPose;
 
 	UPROPERTY()
-		bool bDecoupled;
+	bool bDecoupled;
+
 #endif
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void OnRegister() override;
@@ -399,12 +425,12 @@ public:
 
 	/** mesh component to indicate hand placement */
 #if WITH_EDITORONLY_DATA
-	//UPROPERTY(EditAnywhere, BlueprintReadOnly, Transient, Category = "Hand Visualization")
-		//class USkeletalMeshComponent* HandVisualizerComponent;
-	class UPoseableMeshComponent* HandVisualizerComponent;
+
+	UPROPERTY()
+		TObjectPtr<UPoseableMeshComponent> HandVisualizerComponent;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Transient, Category = "Hand Visualization")
-		class USkeletalMesh* VisualizationMesh;
+		TObjectPtr<USkeletalMesh> VisualizationMesh;
 
 	// If we should show the visualization mesh
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hand Visualization")
@@ -427,7 +453,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	// Material to apply to the hand
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Visualization")
-		UMaterial* HandPreviewMaterial;
+		TObjectPtr<UMaterial> HandPreviewMaterial;
 
 #endif
 };
@@ -440,7 +466,7 @@ class VREXPANSIONPLUGIN_API UHandSocketAnimInstance : public UAnimInstance
 public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, transient, Category = "Socket Data")
-		UHandSocketComponent* OwningSocket;
+		TObjectPtr<UHandSocketComponent> OwningSocket;
 
 	virtual void NativeInitializeAnimation() override
 	{

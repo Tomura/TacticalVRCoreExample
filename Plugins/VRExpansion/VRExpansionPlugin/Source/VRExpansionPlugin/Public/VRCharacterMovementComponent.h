@@ -2,27 +2,16 @@
 
 #pragma once
 #include "CoreMinimal.h"
-#include "AI/Navigation/NavigationAvoidanceTypes.h"
-#include "AI/RVOAvoidanceInterface.h"
-#include "AITypes.h"
-#include "VRRootComponent.h"
-#include "Navigation/PathFollowingComponent.h"
-#include "AI/Navigation/NavigationTypes.h"
-//#include "AI/Navigation/NavigationSystem.h"
-#include "Animation/AnimationAsset.h"
-#include "Engine/EngineBaseTypes.h"
-#include "Engine/EngineTypes.h"
-#include "GameFramework/PawnMovementComponent.h"
-#include "Interfaces/NetworkPredictionInterface.h"
-#include "WorldCollision.h"
-#include "Runtime/Launch/Resources/Version.h"
+//#include "Engine/EngineBaseTypes.h"
+//#include "Engine/EngineTypes.h"
+#include "CharacterMovementCompTypes.h"
 #include "VRBaseCharacterMovementComponent.h"
-#include "GameFramework/CharacterMovementReplication.h"
 #include "VRCharacterMovementComponent.generated.h"
 
 class FDebugDisplayInfo;
 class ACharacter;
 class AVRCharacter;
+class UVRRootComponent;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogVRCharacterMovement, Log, All);
 
@@ -57,7 +46,9 @@ class VREXPANSIONPLUGIN_API UVRCharacterMovementComponent : public UVRBaseCharac
 public:
 
 	UPROPERTY(BlueprintReadOnly, Transient, Category = VRMovement)
-	UVRRootComponent * VRRootCapsule;
+		TObjectPtr<UVRRootComponent> VRRootCapsule;
+
+	virtual void RegenerateOffset() override;
 
 	/** Reject sweep impacts that are this close to the edge of the vertical portion of the capsule when performing vertical sweeps, and try again with a smaller capsule. */
 	static const float CLIMB_SWEEP_EDGE_REJECT_DISTANCE;
@@ -67,8 +58,12 @@ public:
 	virtual bool IsWithinEdgeTolerance(const FVector& CapsuleLocation, const FVector& TestImpactPoint, const float CapsuleRadius) const override;
 
 	// Allow merging movement replication (may cause issues when >10 players due to capsule location
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRCharacterMovementComponent")
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VRCharacterMovementComponent")
 	bool bAllowMovementMerging;
+
+	// If true we will run client corrections off of the HMD location instead of actor, this is a settable value to allow backwards compatibility
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VRCharacterMovementComponent")
+	bool bRunClientCorrectionToHMD;
 
 	// Higher values will cause more slide but better step up
 	//UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRCharacterMovementComponent", meta = (ClampMin = "0.01", UIMin = "0", ClampMax = "1.0", UIMax = "1"))
@@ -126,6 +121,10 @@ public:
 	// Client adjustment overrides to allow for rotation
 	///////////////////////////
 
+	// Engines version of this is private for some reason, making it impossible to override the function that uses it.
+	TWeakObjectPtr<UPrimitiveComponent> LastServerMovementBaseVR = nullptr;
+
+	virtual bool ShouldCorrectRotation() const override { return !bUseClientControlRotation; }
 	virtual void ClientHandleMoveResponse(const FCharacterMoveResponseDataContainer& MoveResponse) override;
 
 	//virtual void SendClientAdjustment() override;
@@ -135,18 +134,18 @@ public:
 	* RelativeClientLocation will be a relative location if MovementBaseUtility::UseRelativePosition(ClientMovementBase) is true, or a world location if false.
 	* @see ServerCheckClientError()
 	*/
-	virtual void ServerMoveHandleClientErrorVR(float ClientTimeStamp, float DeltaTime, const FVector& Accel, const FVector& RelativeClientLocation, float ClientYaw, UPrimitiveComponent* ClientMovementBase, FName ClientBaseBoneName, uint8 ClientMovementMode);
+	virtual void ServerMoveHandleClientErrorVR(float ClientTimeStamp, float DeltaTime, const FVector& Accel, const FVector& RelativeClientLocation, FRotator ClientRot, UPrimitiveComponent* ClientMovementBase, FName ClientBaseBoneName, uint8 ClientMovementMode);
 
 	/**
 	* Check for Server-Client disagreement in position or other movement state important enough to trigger a client correction.
 	* @see ServerMoveHandleClientError()
 	*/
-	virtual bool ServerCheckClientErrorVR(float ClientTimeStamp, float DeltaTime, const FVector& Accel, const FVector& ClientWorldLocation, float ClientYaw, const FVector& RelativeClientLocation, UPrimitiveComponent* ClientMovementBase, FName ClientBaseBoneName, uint8 ClientMovementMode);
+	virtual bool ServerCheckClientErrorVR(float ClientTimeStamp, float DeltaTime, const FVector& Accel, const FVector& ClientWorldLocation, FRotator ClientRot, const FVector& RelativeClientLocation, UPrimitiveComponent* ClientMovementBase, FName ClientBaseBoneName, uint8 ClientMovementMode);
 
 	/** Replicate position correction to client, associated with a timestamped servermove.  Client will replay subsequent moves after applying adjustment.  */
-	virtual void ClientAdjustPositionVR_Implementation(float TimeStamp, FVector NewLoc, uint16 NewYaw, FVector NewVel, UPrimitiveComponent* NewBase, FName NewBaseBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode);
+	virtual void ClientAdjustPositionVR_Implementation(float TimeStamp, FVector NewLoc, /*uint16 NewYaw,*/ FVector NewVel, UPrimitiveComponent* NewBase, FName NewBaseBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode, TOptional<FRotator> OptionalRotation = TOptional<FRotator>(), TOptional<FVector> OptionalGravityDirection = TOptional<FVector>());
 
-
+	virtual bool ClientUpdatePositionAfterServerUpdate() override;
 	///////////////////////////
 	// Replication Functions
 	///////////////////////////
@@ -180,6 +179,8 @@ public:
 	 * Default UObject constructor.
 	 */
 	UVRCharacterMovementComponent(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+
+	virtual void OnRegister() override;
 
 	float ImmersionDepth() const override;
 	bool CanCrouch();
@@ -321,10 +322,10 @@ public:
 class VREXPANSIONPLUGIN_API FNetworkPredictionData_Server_VRCharacter : public FNetworkPredictionData_Server_Character
 {
 public:
+
 	FNetworkPredictionData_Server_VRCharacter(const UCharacterMovementComponent& ClientMovement)
 		: FNetworkPredictionData_Server_Character(ClientMovement)
 	{
-
 	}
 
 	FSavedMovePtr AllocateNewMove()

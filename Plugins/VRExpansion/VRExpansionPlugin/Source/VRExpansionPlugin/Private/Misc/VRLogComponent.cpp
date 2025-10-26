@@ -1,7 +1,11 @@
 // Copyright 1998-2016 Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/VRLogComponent.h"
-#include "Engine/Engine.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VRLogComponent)
+
+#include "GlobalRenderResources.h"
+
+//#include "Engine/Engine.h"
 
 /* Top of File */
 #define LOCTEXT_NAMESPACE "VRLogComponent" 
@@ -42,7 +46,7 @@ void UVRLogComponent::SendKeyEventToConsole(FKey Key, EInputEvent KeyEvent)
 		return;
 
 	ViewportConsole->FakeGotoState(FName(TEXT("Typing")));
-	ViewportConsole->InputKey(0, Key, KeyEvent);
+	ViewportConsole->InputKey(IPlatformInputDeviceMapper::Get().GetDefaultInputDevice(), Key, KeyEvent);
 	ViewportConsole->FakeGotoState(NAME_None);
 }
 
@@ -58,7 +62,7 @@ void UVRLogComponent::AppendTextToConsole(FString Text, bool bReturnAtEnd)
 	if (bReturnAtEnd)
 	{
 		ViewportConsole->FakeGotoState(FName(TEXT("Typing")));
-		ViewportConsole->InputKey(0, EKeys::Enter, EInputEvent::IE_Released);
+		ViewportConsole->InputKey(IPlatformInputDeviceMapper::Get().GetDefaultInputDevice(), EKeys::Enter, EInputEvent::IE_Released);
 		ViewportConsole->FakeGotoState(NAME_None);
 	}
 
@@ -86,12 +90,11 @@ bool UVRLogComponent::DrawConsoleToRenderTarget2D(EBPVRConsoleDrawType DrawType,
 
 	// Create the FCanvas which does the actual rendering.
 	//const ERHIFeatureLevel::Type FeatureLevel = World != nullptr ? World->FeatureLevel : GMaxRHIFeatureLevel;
-
 	FCanvas * RenderCanvas = new FCanvas(
-		Texture->GameThread_GetRenderTargetResource(),
+		(FRenderTarget*)Texture->GameThread_GetRenderTargetResource(),
 		nullptr,
 		World,
-		World->FeatureLevel,
+		World->GetFeatureLevel(),
 		// Draw immediately so that interleaved SetVectorParameter (etc) function calls work as expected
 		FCanvas::CDM_ImmediateDrawing);
 

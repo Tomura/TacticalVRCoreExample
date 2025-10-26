@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Tammo Beil. All rights reserved.
+// This file is covered by the LICENSE file in the root of this plugin.
 
 #pragma once
 
@@ -6,6 +6,9 @@
 #include "Grippables/GrippableStaticMeshComponent.h"
 #include "Weapon/Component/TVRChargingHandleInterface.h"
 #include "TVRPistolSlide.generated.h"
+
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FProgressChangeDelegate, class UTVRPistolSlide*, Slide, float, Progress);
 
 /**
  * 
@@ -48,6 +51,10 @@ public:
 
 	virtual void PlaySlideBackSound();
 	virtual void PlaySlideCloseSound();
+
+	UPROPERTY(Category = "ChargingHandle", BlueprintAssignable)
+	FProgressChangeDelegate EventOnProgressChange;
+	
 protected:
 
 	UFUNCTION()

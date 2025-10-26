@@ -27,6 +27,9 @@ class TACTICALVRCORE_API ATVRMagazine : public AGrippableStaticMeshActor, public
 	UPROPERTY(Category = "Magazine", BlueprintReadOnly, EditDefaultsOnly, meta=(AllowPrivateAccess=true))
 	UBoxComponent* MagazineCollider;
 	
+	UPROPERTY(Category="Gun", BlueprintReadOnly, EditDefaultsOnly, meta=(AllowPrivateAccess=true))
+	UBoxComponent* DropCollider;
+	
 public:
     ATVRMagazine(const FObjectInitializer& OI);
 
@@ -41,7 +44,7 @@ public:
         FTransform& SlotWorldTransform,
         FName& SlotName,
         UGripMotionControllerComponent* CallingController = nullptr,
-        FName OverridePrefix = NAME_None
+        FName OverridePrefix = EName::None
     ) override;
 
 	virtual bool DenyGripping_Implementation(UGripMotionControllerComponent* GripInitiator = nullptr) override;
@@ -49,6 +52,8 @@ public:
 	virtual void OnGrip_Implementation(UGripMotionControllerComponent* GrippingController, const FBPActorGripInformation& GripInformation) override;
 	virtual void OnGripRelease_Implementation(UGripMotionControllerComponent* ReleasingController, const FBPActorGripInformation& GripInformation, bool bWasSocketed) override;
 
+	virtual bool RequestsSocketing_Implementation(USceneComponent*& ParentToSocketTo, FName& OptionalSocketName, FTransform_NetQuantize& RelativeTransform) override;
+	
 	virtual bool SimulateOnDrop_Implementation() override;
 
 	virtual class UHandSocketComponent* GetHandSocket_Implementation(FName SlotName) const override;
@@ -56,6 +61,9 @@ public:
 	UFUNCTION(Category = "Magazine", BlueprintCallable, BlueprintNativeEvent)
 	void GetFollowerLocationAndRotation(FVector& OutVector, FRotator& OutRotator) const;
 	virtual void GetFollowerLocationAndRotation_Implementation(FVector& OutVector, FRotator& OutRotator) const;
+
+	FVector GetCenterOfMass() const;
+	FVector SavedCenterOfMass;
 
 	/**
      * Override so that the Primary Grip Type changes to prevent sudden detachment when the magazine is attached to a weapon
@@ -92,18 +100,26 @@ public:
      * @param AttachComponent Component of the weapon to attach the magazine to
      * @param MagWell Corresponding Magwell
      * @param AttachTransform Transform that the magazines Attach Origin shall be attached to
+     * @param Progress Insertion Progress 1 = fully attached
      */
     virtual bool TryAttachToWeapon(USceneComponent* AttachComponent,
 		class UTVRMagWellComponent* MagWell,
-        const FTransform& AttachTransform);
+        const FTransform& AttachTransform, const float Progress);
+	virtual bool TryAttachToWeapon(USceneComponent* AttachComponent,
+	class UTVRMagazineWell* MagWell,
+	const FTransform& AttachTransform, const float Progress);
 
     /**
      * Moves the Magazine so that the Transform of the Attach Origin Component aligns with the argument.
      * This way we are independent from the Meshes Transform
      * @param NewTransform Transform in World Space to align the Attach Origin to.
+     * @param bSweep Sweep the movement path?
+     * @param outTransform output transform where the magazine ends up being in world space
+     * @returns whether something was hit
      */
     UFUNCTION(Category = "Magazine", BlueprintCallable)
-    virtual void SetMagazineOriginToTransform(const FTransform& NewTransform);
+    virtual bool SetMagazineOriginToTransform(const FTransform& NewTransform, bool bSweep, FTransform& outTransform);
+    virtual bool SetMagazineOriginToTransform(const FTransform& NewTransform);
 
     /**
      * @returns True if the magazine is inserted into an weapon
@@ -216,7 +232,7 @@ public:
 	 * @returns the mag well the magazine is inserted into or null if the magazine is free
 	 */
 	UFUNCTION(Category="Magazine", BlueprintCallable)
-	UTVRMagWellComponent* GetAttachedMagWell()  const { return AttachedMagWell; }
+	USceneComponent* GetAttachedMagWell()  const { return AttachedMagWell; }
 
 	/**
 	 * Returns a number between 0 adn 1 where 0 means the magazine is free and 1 means the magazine is fully inserted.
@@ -278,6 +294,7 @@ public:
 
 	int32 GetDisplayAmmo() const;
 
+	bool HasMagWellMagRelease() const;
 	
 	
 protected:
@@ -312,7 +329,7 @@ protected:
     bool bIsAttached;
 	
 	UPROPERTY(Category="Magazine", BlueprintReadOnly)
-	class UTVRMagWellComponent* AttachedMagWell;
+	class USceneComponent* AttachedMagWell;
 
     /** Scene Component that marks the Slot the hand is gripping */
     UPROPERTY(Category = "Magazine", BlueprintReadOnly, EditAnywhere)

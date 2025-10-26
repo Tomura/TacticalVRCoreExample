@@ -1,18 +1,18 @@
 // Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GripMotionControllerComponent.h"
-#include "MotionControllerComponent.h"
-#include "VRGripInterface.h"
 #include "GameplayTagContainer.h"
+#include "VRGripInterface.h"
 #include "GameplayTagAssetInterface.h"
-#include "Components/SplineComponent.h"
-#include "VRInteractibleFunctionLibrary.h"
+#include "Interactibles/VRInteractibleFunctionLibrary.h"
 #include "Components/StaticMeshComponent.h"
-
 #include "VRSliderComponent.generated.h"
+
+class UGripMotionControllerComponent;
+class USplineComponent;
 
 UENUM(Blueprintable)
 enum class EVRInteractibleSliderLerpType : uint8
@@ -149,7 +149,7 @@ public:
 
 	// Set this to assign a spline component to the slider
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Replicated/*Using = OnRep_SplineComponentToFollow*/, Category = "VRSliderComponent")
-	USplineComponent * SplineComponentToFollow;
+	TObjectPtr<USplineComponent> SplineComponentToFollow;
 
 	/*UFUNCTION()
 	virtual void OnRep_SplineComponentToFollow()
@@ -224,7 +224,6 @@ public:
 	*/
 	float GetDistanceAlongSplineAtSplineInputKey(float InKey) const;
 
-
 	// Calculates the current slider progress
 	UFUNCTION(BlueprintCallable, Category = "VRSliderComponent")
 		float CalculateSliderProgress();
@@ -245,6 +244,11 @@ public:
 
 	void GetLerpedKey(float &ClosestKey, float DeltaTime);
 	float GetCurrentSliderProgress(FVector CurLocation, bool bUseKeyInstead = false, float CurKey = 0.f);
+
+	// Returns the slider progress as it is currently per axis (not the total progress, just the amount per axis that has a min/max)
+	UFUNCTION(BlueprintCallable, Category = "VRSliderComponent")
+		FVector GetPerAxisSliderProgress();
+
 	FVector ClampSlideVector(FVector ValueToClamp);
 
 	// ------------------------------------------------
@@ -299,12 +303,10 @@ public:
 	bool bOriginalReplicatesMovement;
 
 	// Called when a object is gripped
-	// If you override the OnGrip event then you will need to call the parent implementation or this event will not fire!!
 	UPROPERTY(BlueprintAssignable, Category = "Grip Events")
 		FVROnGripSignature OnGripped;
 
 	// Called when a object is dropped
-	// If you override the OnGrip event then you will need to call the parent implementation or this event will not fire!!
 	UPROPERTY(BlueprintAssignable, Category = "Grip Events")
 		FVROnDropSignature OnDropped;
 

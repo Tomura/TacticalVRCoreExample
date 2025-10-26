@@ -15,6 +15,7 @@ public class VRExpansionPlugin : ModuleRules
         //bEnforceIWYU = true;
 
         PublicDefinitions.Add("WITH_VR_EXPANSION=1");
+        SetupIrisSupport(Target);
 
         // To detect VR Preview, not built out in packaged builds
         if (Target.bBuildEditor == true)
@@ -55,6 +56,7 @@ public class VRExpansionPlugin : ModuleRules
         new string[]
         {
                     "Core",
+                    "NetCore",
                     "CoreUObject",
                     "Engine",
                    // "InputCore",
@@ -69,23 +71,18 @@ public class VRExpansionPlugin : ModuleRules
                     "UMG",
                     "NavigationSystem",
                     "AIModule",
-                    "AnimGraphRuntime"
-
+                    "AnimGraphRuntime",
+                    "XRBase",
+                    "GameplayTags"
                     //"Renderer",
                     //"UtilityShaders"
         });
 
-        if (Target.bCompilePhysX)
-        {
-            PublicDependencyModuleNames.Add("PhysX");
-        }
-
-        if(Target.bUseChaos)
-        {
+        //if(Target.bUseChaos)
+       // {
             PublicDependencyModuleNames.Add("Chaos");
             PublicDependencyModuleNames.Add("ChaosVehicles");
-        }
-
+        //}
 
         PrivateDependencyModuleNames.AddRange(
             new string[] 
@@ -94,30 +91,16 @@ public class VRExpansionPlugin : ModuleRules
                // "CoreUObject",
                 //"Engine",
                 "InputCore",
-               // "PhysX",
                 //"FLEX", remove comment if building in the NVIDIA flex branch - NOTE when put in place FLEX only listed win32 and win64 at compatible platforms
                 //"HeadMountedDisplay",
                 "RHI",
+				"ApplicationCore",
                 "RenderCore",
                // "ShaderCore",
-                "NetworkReplayStreaming",
-                "AIModule",
-                "UMG",
-                "GameplayTags"
+                "NetworkReplayStreaming"
                 //"Renderer",
                // "UtilityShaders"
             });
-
-        if (Target.bCompilePhysX)
-        {
-            PublicDependencyModuleNames.Add("PhysXVehicles");
-        }
-
-        if (Target.bUseChaos)
-        {
-            //PublicDependencyModuleNames.Add("ChaosVehiclesPlugin");
-        }
-
 
         PrivateDependencyModuleNames.AddRange(
 			new string[]

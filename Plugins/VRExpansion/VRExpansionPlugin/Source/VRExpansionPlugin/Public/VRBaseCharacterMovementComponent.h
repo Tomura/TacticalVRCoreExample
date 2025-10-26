@@ -2,18 +2,15 @@
 
 #pragma once
 #include "CoreMinimal.h"
-#include "Engine/Engine.h"
-#include "VRBPDatatypes.h"
-#include "AITypes.h"
-#include "AI/Navigation/NavigationTypes.h"
-#include "Navigation/PathFollowingComponent.h"
-#include "GameFramework/Character.h"
+#include "CharacterMovementCompTypes.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "CharacterMovementCompTypes.h"
 #include "VRBaseCharacterMovementComponent.generated.h"
 
 class AVRBaseCharacter;
+class AVRCharacter;
+struct FAIRequestID;
+struct FPathFollowingResult;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogVRBaseCharacterMovement, Log, All);
 
@@ -39,13 +36,15 @@ public:
 
 	/** BaseVR Character movement component belongs to */
 	UPROPERTY(Transient, DuplicateTransient)
-		AVRBaseCharacter* BaseVRCharacterOwner;
+		TObjectPtr<AVRCharacter> BaseVRCharacterOwner;
 
 	virtual void SetUpdatedComponent(USceneComponent* NewUpdatedComponent);
 
 	virtual void MoveAutonomous(float ClientTimeStamp, float DeltaTime, uint8 CompressedFlags, const FVector& NewAccel) override;
 	virtual void PerformMovement(float DeltaSeconds) override;
 	//virtual void ReplicateMoveToServer(float DeltaTime, const FVector& NewAcceleration) override;
+
+	virtual bool ClientUpdatePositionAfterServerUpdate() override;
 
 	// Overriding this to run the seated logic
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
@@ -64,7 +63,33 @@ public:
 
 	// When true the hmd movement injection speed is capped to the maximum movement speed
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRMovement")
-	bool bCapHMDMovementToMaxMovementSpeed;
+		bool bCapHMDMovementToMaxMovementSpeed;
+
+	// If true then when in walking mode the character will attempt to automatically orient itself to the normal of the floor it is standing on
+	// Both the rotation and gravity vector will be effected.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRMovement|Wall Walking")
+		bool bAutoOrientToFloorNormal = false;
+
+	// If true then we will attempt to blend all gravity based floor changes as long as they are within the max walking angle of the CMC
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRMovement|Wall Walking")
+		bool bBlendGravityFloorChanges = true;
+
+	// The rate at which we will blend the change in rotation for wall walking
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRMovement|Wall Walking")
+		float FloorOrientationChangeBlendRate = 25.0f;
+
+	// Sets the value of bAutoOrientToFloorNormal in a manner that cleans up when removed
+	UFUNCTION(BlueprintCallable, Category = "BaseVRCharacterMovementComponent|Wall Walking")
+		void SetAutoOrientToFloorNormal(bool bAutoOrient, bool bRevertGravityWhenDisabled = true);
+
+	// Store if our current movement was blending rotation
+	bool bIsBlendingOrientation = false;
+
+	void AutoTraceAndSetCharacterToNewGravity(FHitResult & TargetFloor, float DeltaTime = 1.0f);
+
+	// Directly set new gravity (does not replicate, move action is preferrable) 
+	UFUNCTION(BlueprintCallable, Category = "BaseVRCharacterMovementComponent|Wall Walking")
+	bool SetCharacterToNewGravity(FVector NewGravityDirection, bool bOrientToNewGravity = true, float Deltatime = 1.0f);
 
 	// Adding seated transition
 	void OnMovementModeChanged(EMovementMode PreviousMovementMode, uint8 PreviousCustomMode) override;
@@ -87,8 +112,8 @@ public:
 	bool IsClimbing() const;
 
 	// Sets the crouching half height since it isn't exposed during runtime to blueprints
-	UFUNCTION(BlueprintCallable, Category = "VRMovement")
-		void SetCrouchedHalfHeight(float NewCrouchedHalfHeight);
+	//UFUNCTION(BlueprintCallable, Category = "VRMovement")
+	//	void SetCrouchedHalfHeight(float NewCrouchedHalfHeight);
 
 	// Setting this higher will divide the wall slide effect by this value, to reduce collision sliding.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRMovement", meta = (ClampMin = "0.0", UIMin = "0", ClampMax = "5.0", UIMax = "5"))
@@ -116,13 +141,15 @@ public:
 	virtual void StoreSetTrackingPaused(bool bNewTrackingPaused);
 
 	// Perform a snap turn in line with the move action system
+	// If bRotateAroundCapsule is true then the rotation is around the offset capsule (neck) rather than the actual camera location
 	UFUNCTION(BlueprintCallable, Category = "VRMovement")
-		void PerformMoveAction_SnapTurn(float SnapTurnDeltaYaw, EVRMoveActionVelocityRetention VelocityRetention = EVRMoveActionVelocityRetention::VRMOVEACTION_Velocity_None, bool bFlagGripTeleport = false, bool bFlagCharacterTeleport = false);
+		void PerformMoveAction_SnapTurn(float SnapTurnDeltaYaw, EVRMoveActionVelocityRetention VelocityRetention = EVRMoveActionVelocityRetention::VRMOVEACTION_Velocity_None, bool bFlagGripTeleport = false, bool bFlagCharacterTeleport = false, bool bRotateAroundCapsule = true);
 
 	// Perform a rotation set in line with the move actions system
 	// This node specifically sets the FACING direction to a value, where your HMD is pointed
+	// If bRotateAroundCapsule is true then the rotation is around the offset capsule (neck) rather than the actual camera location
 	UFUNCTION(BlueprintCallable, Category = "VRMovement")
-		void PerformMoveAction_SetRotation(float NewYaw, EVRMoveActionVelocityRetention VelocityRetention = EVRMoveActionVelocityRetention::VRMOVEACTION_Velocity_None, bool bFlagGripTeleport = false, bool bFlagCharacterTeleport = false);
+		void PerformMoveAction_SetRotation(float NewYaw, EVRMoveActionVelocityRetention VelocityRetention = EVRMoveActionVelocityRetention::VRMOVEACTION_Velocity_None, bool bFlagGripTeleport = false, bool bFlagCharacterTeleport = false, bool bRotateAroundCapsule = true);
 
 	// Perform a teleport in line with the move action system
 	UFUNCTION(BlueprintCallable, Category = "VRMovement")
@@ -132,6 +159,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "VRMovement")
 		void PerformMoveAction_StopAllMovement();
 	
+	// Set the gravity direction for the character manually (optionall auto align to the new gravity)
+	UFUNCTION(BlueprintCallable, Category = "VRMovement")
+		void PerformMoveAction_SetGravityDirection(FVector NewGravityDirection, bool bOrientToNewGravity);
+
 	// Perform a custom moveaction that you define, will call the OnCustomMoveActionPerformed event in the character when processed so you can run your own logic
 	// Be sure to set the minimum data replication requirements for your move action in order to save on replication.
 	// Flags will always replicate if it is non zero
@@ -140,11 +171,14 @@ public:
 
 	FVRMoveActionArray MoveActionArray;
 
+	virtual void RegenerateOffset() {};
+
 	bool CheckForMoveAction();
 	virtual bool DoMASnapTurn(FVRMoveActionContainer& MoveAction);
 	virtual bool DoMASetRotation(FVRMoveActionContainer& MoveAction);
 	virtual bool DoMATeleport(FVRMoveActionContainer& MoveAction);
 	virtual bool DoMAStopAllMovement(FVRMoveActionContainer& MoveAction);
+	virtual bool DoMASetGravityDirection(FVRMoveActionContainer& MoveAction);
 	virtual bool DoMAPauseTracking(FVRMoveActionContainer& MoveAction);
 
 	FVector CustomVRInputVector;
@@ -154,15 +188,7 @@ public:
 	bool bApplyAdditionalVRInputVectorAsNegative;
 	
 	// Rewind the relative movement that we had with the HMD
-	inline void RewindVRRelativeMovement()
-	{
-		if (bApplyAdditionalVRInputVectorAsNegative)
-		{
-			//FHitResult AHit;
-			MoveUpdatedComponent(-AdditionalVRInputVector, UpdatedComponent->GetComponentQuat(), false);
-			//SafeMoveUpdatedComponent(-AdditionalVRInputVector, UpdatedComponent->GetComponentQuat(), false, AHit);
-		}
-	}
+	void RewindVRRelativeMovement();
 
 	// Any movement above this value we will consider as have been a tracking jump and null out the movement in the character
 	// Raise this value higher if players are noticing freezing when moving quickly.
@@ -219,13 +245,15 @@ public:
 		LastPreAdditiveVRVelocity += (CustomVRInputVector / deltaTime);
 
 		Velocity += LastPreAdditiveVRVelocity;
-	
-		if (bCapHMDMovementToMaxMovementSpeed && IsExceedingMaxSpeed(GetMaxSpeed()))
-		{
-			// Force us to the max possible speed for the movement mode
-			Velocity = Velocity.GetSafeNormal() * GetMaxSpeed();
-		}
 
+		if (bCapHMDMovementToMaxMovementSpeed && GetReplicatedMovementMode() != EVRConjoinedMovementModes::C_MOVE_Falling)
+		{
+			if (IsExceedingMaxSpeed(GetMaxSpeed()))
+			{
+				// Force us to the max possible speed for the movement mode
+				Velocity = Velocity.GetSafeNormal() * GetMaxSpeed();
+			}
+		}
 	}
 
 	inline void RestorePreAdditiveVRMotionVelocity()
@@ -262,7 +290,7 @@ public:
 	virtual void PhysCustom_LowGrav(float deltaTime, int32 Iterations);
 
 	// Teleport grips on correction to fixup issues
-	virtual void OnClientCorrectionReceived(class FNetworkPredictionData_Client_Character& ClientData, float TimeStamp, FVector NewLocation, FVector NewVelocity, UPrimitiveComponent* NewBase, FName NewBaseBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode) override;
+	virtual void OnClientCorrectionReceived(class FNetworkPredictionData_Client_Character& ClientData, float TimeStamp, FVector NewLocation, FVector NewVelocity, UPrimitiveComponent* NewBase, FName NewBaseBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode, FVector ServerGravityDirection) override;
 
 	// Fix network smoothing with our default mesh back in
 	virtual void SimulatedTick(float DeltaSeconds) override;
@@ -295,17 +323,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRMovement")
 		bool bRunControlRotationInMovementComponent;
 
-	// Moved into compute floor dist
-	// Option to Skip simulating components when looking for floor
-	/*virtual bool FloorSweepTest(
+	// They have gravity checks incorrect in here so having to override it again
+	virtual bool FloorSweepTest(
+		struct FHitResult& OutHit,
 		const FVector& Start,
-		FHitResult& OutHit,
 		const FVector& End,
 		ECollisionChannel TraceChannel,
 		const struct FCollisionShape& CollisionShape,
 		const struct FCollisionQueryParams& Params,
 		const struct FCollisionResponseParams& ResponseParam
-	) const override;*/
+	) const override;
 
 	virtual void ComputeFloorDist(const FVector& CapsuleLocation, float LineDistance, float SweepDistance, FFindFloorResult& OutFloorResult, float SweepRadius, const FHitResult* DownwardSweepResult = NULL) const override;
 

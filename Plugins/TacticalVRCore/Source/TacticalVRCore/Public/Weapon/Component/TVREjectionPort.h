@@ -3,7 +3,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "TransformNoScale.h"
 #include "Components/BoxComponent.h"
 #include "TVREjectionPort.generated.h"
 
@@ -16,22 +15,26 @@ UCLASS(Blueprintable, meta = (BlueprintSpawnableComponent), ClassGroup = (Tactic
 class TACTICALVRCORE_API UTVREjectionPort : public UBoxComponent
 {
 	GENERATED_BODY()
-
-	UPROPERTY()
-	class UArrowComponent* EjectionArrow;
 	
 public:
 	UTVREjectionPort(const FObjectInitializer& OI);
 	virtual void BeginPlay() override;
 	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
+	
 
-#if WITH_EDITOR
-	virtual void OnRegister() override;
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
-	virtual void PostEditUndo() override;
-#endif
+	/**
+	* Overlap Event. Bound to the BeginOverlap delegate.
+	* @param OverlappedComponent Component that is overlapping (should be this component)
+	* @param OtherActor The actors that is overlapping with the magwell
+	* @param OtherComp The component of OtherActor that is overlapping with this
+	* @param OtherBodyIndex Body Index of the overlapping body
+	* @param bFromSweep Whether the overlap was triggered by a sweep
+	* @param SweepResult Sweep result
+	*/
+	UFUNCTION()
+	virtual void OnBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult & SweepResult);
 
+	
 	virtual void PopulateCartridgePool();
 	virtual class ATVRSpentCartridge* GetCartridgeFromPool();
 	
@@ -42,6 +45,9 @@ public:
 
 	UFUNCTION()
 	virtual void OnPooledCartridgeDestroyed(AActor* PooledCatridge);
+
+	UFUNCTION(Category="Ejection", BlueprintCallable)
+	virtual void LinkMagComp(UObject* MagInterface);
 	
 protected:
 	virtual void TryLoadChamber(ATVRCartridge* Cartridge);
@@ -66,5 +72,15 @@ protected:
 	UPROPERTY(Category="Ejection", EditDefaultsOnly, BlueprintReadOnly)
 	TSubclassOf<class ATVRSpentCartridge> SpentCartridgeClass;
 
+	
+	UPROPERTY(Category="Chamber", EditDefaultsOnly)
+	USoundBase* EjectSound;
+
+	UPROPERTY()
+	UAudioComponent* EjectAudioComp;
+
 	FRandomStream CartridgeEjectRandomStream;
+
+	UPROPERTY()
+	TArray<TSubclassOf<class ATVRCartridge>> AllowedCatridges;
 };

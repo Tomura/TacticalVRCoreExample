@@ -3,24 +3,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GripMotionControllerComponent.h"
-#include "MotionControllerComponent.h"
-#include "VRGripInterface.h"
 #include "GameplayTagContainer.h"
 #include "GameplayTagAssetInterface.h"
+#include "VRGripInterface.h"
 #include "Interactibles/VRInteractibleFunctionLibrary.h"
-#include "VRExpansionFunctionLibrary.h"
-#include "PhysicsEngine/ConstraintInstance.h"
 #include "Components/StaticMeshComponent.h"
-
-#include "PhysicsPublic.h"
-
-#if WITH_PHYSX
-#include "PhysXPublic.h"
-#endif // WITH_PHYSX
-
 #include "VRLeverComponent.generated.h"
 
+class UGripMotionControllerComponent;
 
 UENUM(Blueprintable)
 enum class EVRInteractibleLeverAxis : uint8
@@ -108,9 +98,6 @@ public:
 		FVector CurrentLeverForwardVector;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRLeverComponent")
-		bool bIsPhysicsLever;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRLeverComponent")
 		bool bUngripAtTargetRotation;
 
 	// Rotation axis to use, XY is combined X and Y, only LerpToZero and PositiveLimits work with this mode
@@ -128,6 +115,10 @@ public:
 	// The max angle of the lever in the negative direction
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRLeverComponent", meta = (ClampMin = "0.0", ClampMax = "179.9", UIMin = "0.0", UIMax = "180.0"))
 		float LeverLimitNegative;
+
+	// The max angle of the flightsticks yaw in either direction off of 0
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRLeverComponent|Flight Stick Settings", meta = (ClampMin = "0.0", ClampMax = "179.9", UIMin = "0.0", UIMax = "180.0"))
+		float FlightStickYawLimit;
 
 	// If true then this lever is locked in place until unlocked again
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRLeverComponent")
@@ -311,23 +302,12 @@ public:
 	virtual void OnUnregister() override;
 
 	// Called when a object is gripped
-	// If you override the OnGrip event then you will need to call the parent implementation or this event will not fire!!
 	UPROPERTY(BlueprintAssignable, Category = "Grip Events")
 		FVROnGripSignature OnGripped;
 
 	// Called when a object is dropped
-	// If you override the OnGrip event then you will need to call the parent implementation or this event will not fire!!
 	UPROPERTY(BlueprintAssignable, Category = "Grip Events")
 		FVROnDropSignature OnDropped;
-
-#if WITH_PHYSX
-	physx::PxD6Joint* HandleData;
-	//int32 SceneIndex;
-#endif
-
-	bool DestroyConstraint();
-	bool SetupConstraint();
-
 
 	// Grip interface setup
 

@@ -4,6 +4,7 @@
 #include "TacticalCollisionProfiles.h"
 #include "Components/AudioComponent.h"
 #include "Weapon/TVRGunBase.h"
+#include "GripMotionControllerComponent.h"
 #include "Weapon/Component/TVRGunFireComponent.h"
 
 UTVRPistolSlide::UTVRPistolSlide(const FObjectInitializer& OI) : Super(OI)
@@ -179,6 +180,10 @@ void UTVRPistolSlide::SetProgress_Implementation(float Value)
 		bIsLocked ? LockedProgress : 0.f,
 		1.f);
 	SetRelativeLocation(InitialRelativeTransform.TransformPositionNoScale(FVector(0.f, -CurrentProgress*MaxDeflection, 0.f)));
+	if(EventOnProgressChange.IsBound())
+	{
+		EventOnProgressChange.Broadcast(this, CurrentProgress);
+	}
 }
 
 

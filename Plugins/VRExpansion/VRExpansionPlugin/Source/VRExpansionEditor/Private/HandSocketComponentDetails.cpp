@@ -2,7 +2,7 @@
 
 #include "HandSocketComponentDetails.h"
 #include "HandSocketVisualizer.h"
-#include "PropertyEditing.h"
+//#include "PropertyEditing.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "PropertyHandle.h"
@@ -16,7 +16,8 @@
 #include "Editor/ContentBrowser/Public/IContentBrowserSingleton.h"
 #include "Editor/ContentBrowser/Public/ContentBrowserModule.h"
 #include "AnimationUtils.h"
-#include "AssetRegistryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "UObject/SavePackage.h"
 #include "Misc/MessageDialog.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSeparator.h"
@@ -25,6 +26,8 @@
 #include "Editor.h"
 #include "EditorStyleSet.h"
 #include "Styling/CoreStyle.h"
+
+#include "Animation/AnimData/AnimDataModel.h"
 
 #include "Editor/UnrealEdEngine.h"
 #include "UnrealEdGlobals.h"
@@ -92,7 +95,7 @@ TWeakObjectPtr<UAnimSequence> FHandSocketComponentDetails::SaveAnimationAsset(co
 	// if object with same name exists, warn user
 	if (Object)
 	{
-		EAppReturnType::Type ReturnValue = FMessageDialog::Open(EAppMsgType::YesNo, NSLOCTEXT("UnrealEd", "Error_AssetExist", "Asset with same name exists. Do you wish to overwrite it?"));
+		EAppReturnType::Type ReturnValue = FMessageDialog::Open(EAppMsgType::YesNo, LOCTEXT("Error_AssetExist", "Asset with same name exists. Do you wish to overwrite it?"));
 		if (ReturnValue == EAppReturnType::No)
 		{
 			return FinalAnimation; // failed
@@ -128,140 +131,149 @@ TWeakObjectPtr<UAnimSequence> FHandSocketComponentDetails::SaveAnimationAsset(co
 		//return true;
 		UAnimSequence* AnimationObject = NewSeq;
 
-		AnimationObject->RecycleAnimSequence();
-		if (BaseAnimation)
+		IAnimationDataController& AnimController = AnimationObject->GetController();
 		{
-			AnimationObject->BoneCompressionSettings = BaseAnimation->BoneCompressionSettings;
-		}
-		else
-		{
-			AnimationObject->BoneCompressionSettings = FAnimationUtils::GetDefaultAnimationBoneCompressionSettings();
-		}
-
-		AnimationObject->SequenceLength = 4.f;
-		AnimationObject->SetRawNumberOfFrame(1);
-
-		if (BaseAnimation)
-		{
-			for (FName TrackName : BaseAnimation->GetAnimationTrackNames())
+			IAnimationDataController::FScopedBracket ScopedBracket(AnimController, LOCTEXT("SaveAnimationAsset_VRE", "Creating Animation Sequence based on hand pose"));
+			AnimationObject->ResetAnimation();
+			if (BaseAnimation)
 			{
-				AnimationObject->AddNewRawTrack(TrackName);
+				AnimationObject->BoneCompressionSettings = BaseAnimation->BoneCompressionSettings;
 			}
-		}
-		else
-		{				
-			for (int i = 0; i < LocalPoses.Num(); i++)
+			else
 			{
-				AnimationObject->AddNewRawTrack(HandSocketComponent->VisualizationMesh->GetRefSkeleton().GetBoneName(i));
+				AnimationObject->BoneCompressionSettings = FAnimationUtils::GetDefaultAnimationBoneCompressionSettings();
 			}
-		}
 
-		if (BaseAnimation)
-		{
-			AnimationObject->RetargetSource = BaseAnimation->RetargetSource;
-		}
-		else
-		{
-			AnimationObject->RetargetSource = HandSocketComponent->VisualizationMesh ?  HandSocketComponent->VisualizationMesh->GetSkeleton()->GetRetargetSourceForMesh(HandSocketComponent->VisualizationMesh) : NAME_None;
-		}
+			AnimController.InitializeModel();
+			AnimController.RemoveAllBoneTracks(false);
+			
 
+			//checkf(MovieScene, TEXT("No Movie Scene found for SequencerDataModel"));
+			//AnimController.SetPlayLength(4.f);
+			AnimController.SetNumberOfFrames(FFrameNumber(1), false);
 
-		/// SAVE POSE
-		if (BaseAnimation)
-		{
-			for (int32 TrackIndex = 0; TrackIndex < BaseAnimation->GetRawAnimationData().Num(); ++TrackIndex)
+			// Set frame rate to 1 to 1 as we don't animate
+			AnimController.SetFrameRate(FFrameRate(1, 1));
+
+			TArray<FName> TrackNames;
+			const IAnimationDataModel* BaseDataModel = BaseAnimation ? BaseAnimation->GetController().GetModel() : nullptr;
+
+			if (BaseAnimation)
 			{
-				FRawAnimSequenceTrack& RawTrack = BaseAnimation->GetRawAnimationTrack(TrackIndex);
-
-				bool bHadLoc = false;
-				bool bHadRot = false;
-				bool bHadScale = false;
-				FVector Loc = FVector::ZeroVector;
-				FQuat Rot = FQuat::Identity;
-				FVector Scale = FVector::ZeroVector;
-
-				if (RawTrack.PosKeys.Num())
+				if (BaseDataModel)
 				{
-					Loc = RawTrack.PosKeys[0];
-					bHadLoc = true;
-				}
-
-				if (RawTrack.RotKeys.Num())
-				{
-					Rot = RawTrack.RotKeys[0];
-					bHadRot = true;
-				}
-
-				if (RawTrack.ScaleKeys.Num())
-				{
-					Scale = RawTrack.ScaleKeys[0];
-					bHadScale = true;
-				}
-
-				FTransform FinalTrans(Rot, Loc, Scale);
-
-				FName TrackName = (BaseAnimation->GetAnimationTrackNames())[TrackIndex];
-
-				FQuat DeltaQuat = FQuat::Identity;
-				for (FBPVRHandPoseBonePair& HandPair : HandSocketComponent->CustomPoseDeltas)
-				{
-					if (HandPair.BoneName == TrackName)
+					BaseDataModel->GetBoneTrackNames(TrackNames);
+					for (FName TrackName : TrackNames)
 					{
-						DeltaQuat = HandPair.DeltaPose;
-						bHadRot = true;
-						break;
+						AnimController.AddBoneCurve(TrackName);
 					}
 				}
-
-				FinalTrans.ConcatenateRotation(DeltaQuat);
-				FinalTrans.NormalizeRotation();
-
-				FRawAnimSequenceTrack& RawNewTrack = AnimationObject->GetRawAnimationTrack(TrackIndex);
-				if (bHadLoc)
-					RawNewTrack.PosKeys.Add(FinalTrans.GetTranslation());
-				if (bHadRot)
-					RawNewTrack.RotKeys.Add(FinalTrans.GetRotation());
-				if (bHadScale)
-					RawNewTrack.ScaleKeys.Add(FinalTrans.GetScale3D());
-			}
-		}
-		else
-		{
-			USkeletalMesh* SkeletalMesh = HandSocketComponent->VisualizationMesh;
-			USkeleton* AnimSkeleton = SkeletalMesh->GetSkeleton();
-			for (int32 TrackIndex = 0; TrackIndex < AnimationObject->GetRawAnimationData().Num(); ++TrackIndex)
-			{
-				// verify if this bone exists in skeleton
-				int32 BoneTreeIndex = AnimationObject->GetSkeletonIndexFromRawDataTrackIndex(TrackIndex);
-				if (BoneTreeIndex != INDEX_NONE)
+				else
 				{
-					int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkeletalMesh, BoneTreeIndex);
-					//int32 ParentIndex = SkeletalMesh->RefSkeleton.GetParentIndex(BoneIndex);
-					FTransform LocalTransform = LocalPoses[BoneIndex];
+					return FinalAnimation;
+				}
+			}
+			else
+			{
+				int numBones = HandSocketComponent->VisualizationMesh->GetRefSkeleton().GetNum();
+				for (int i = 0; i < LocalPoses.Num() && i < numBones; ++i)
+				{
+					AnimController.AddBoneCurve(HandSocketComponent->VisualizationMesh->GetRefSkeleton().GetBoneName(i));
+					//AnimController.AddBoneTrack(HandSocketComponent->VisualizationMesh->GetRefSkeleton().GetBoneName(i));
+				}
+			}
 
+			if (BaseAnimation)
+			{
+				AnimationObject->RetargetSource = BaseAnimation->RetargetSource;
+			}
+			else
+			{
+				AnimationObject->RetargetSource = HandSocketComponent->VisualizationMesh ? HandSocketComponent->VisualizationMesh->GetSkeleton()->GetRetargetSourceForMesh(HandSocketComponent->VisualizationMesh) : NAME_None;
+			}
 
-					FName BoneName = AnimSkeleton->GetReferenceSkeleton().GetBoneName(BoneIndex);
+			const IAnimationDataModel* DataModel = AnimController.GetModel();
+
+			/// SAVE POSE
+			if (BaseAnimation && DataModel && BaseDataModel)
+			{
+				for (int32 TrackIndex = 0; TrackIndex < /*DataModel->GetBoneAnimationTracks().Num()*/BaseDataModel->GetNumBoneTracks(); ++TrackIndex)
+				{
+					FName TrackName = TrackIndex < TrackNames.Num() ? TrackNames[TrackIndex] : NAME_None;
+					if (!BaseDataModel->IsValidBoneTrackName(TrackName))
+					{
+						continue;
+					}
+
+					FTransform FinalTrans = BaseDataModel->GetBoneTrackTransform(TrackName, 0);
+					//FTransform FinalTrans(Rot, Loc, Scale);
 
 					FQuat DeltaQuat = FQuat::Identity;
 					for (FBPVRHandPoseBonePair& HandPair : HandSocketComponent->CustomPoseDeltas)
 					{
-						if (HandPair.BoneName == BoneName)
+						if (HandPair.BoneName == TrackName)
 						{
 							DeltaQuat = HandPair.DeltaPose;
+							break;
 						}
 					}
 
-					LocalTransform.ConcatenateRotation(DeltaQuat);
-					LocalTransform.NormalizeRotation();
+					FinalTrans.ConcatenateRotation(DeltaQuat);
+					FinalTrans.NormalizeRotation();
 
-					FRawAnimSequenceTrack& RawTrack = AnimationObject->GetRawAnimationTrack(TrackIndex);
-					RawTrack.PosKeys.Add(LocalTransform.GetTranslation());
-					RawTrack.RotKeys.Add(LocalTransform.GetRotation());
-					RawTrack.ScaleKeys.Add(LocalTransform.GetScale3D());
+					//FRawAnimSequenceTrack& RawNewTrack = DataModel->GetBoneTrackByIndex(TrackIndex).InternalTrackData;
+					AnimController.SetBoneTrackKeys(TrackName, { FinalTrans.GetTranslation() }, { FinalTrans.GetRotation() }, { FinalTrans.GetScale3D() });
 				}
 			}
-		}
+			else if(DataModel)
+			{
+				USkeletalMesh* SkeletalMesh = HandSocketComponent->VisualizationMesh;
+				FReferenceSkeleton RefSkeleton = SkeletalMesh->GetRefSkeleton();	
+				USkeleton* AnimSkeleton = SkeletalMesh->GetSkeleton();
 
+				for (int32 TrackIndex = 0; TrackIndex < RefSkeleton.GetNum(); ++TrackIndex)
+				{
+					
+					FName TrackName = RefSkeleton.GetBoneName(TrackIndex);
+					if (!DataModel->IsValidBoneTrackName(TrackName))
+					{
+						continue;
+					}
+
+					int32 BoneTreeIndex = RefSkeleton.FindBoneIndex(TrackName);
+
+					// verify if this bone exists in skeleton
+					//int32 BoneTreeIndex = DataModel->GetBoneTrackByIndex(TrackIndex).BoneTreeIndex;
+
+					if (BoneTreeIndex != INDEX_NONE)
+					{
+
+						int32 BoneIndex = BoneTreeIndex;//AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkeletalMesh, BoneTreeIndex);
+						//int32 ParentIndex = SkeletalMesh->RefSkeleton.GetParentIndex(BoneIndex);
+						FTransform LocalTransform = LocalPoses[BoneIndex];
+
+
+						FName BoneName = AnimSkeleton->GetReferenceSkeleton().GetBoneName(BoneIndex);
+
+						FQuat DeltaQuat = FQuat::Identity;
+						for (FBPVRHandPoseBonePair& HandPair : HandSocketComponent->CustomPoseDeltas)
+						{
+							if (HandPair.BoneName == BoneName)
+							{
+								DeltaQuat = HandPair.DeltaPose;
+							}
+						}
+
+						LocalTransform.ConcatenateRotation(DeltaQuat);
+						LocalTransform.NormalizeRotation();
+
+						AnimController.SetBoneTrackKeys(BoneName, { LocalTransform.GetTranslation() }, { LocalTransform.GetRotation() }, { LocalTransform.GetScale3D() });
+					}
+				}
+			}
+
+			AnimController.NotifyPopulated();
+		}
 		/// END SAVE POSE 
 		/// 
 		/// 
@@ -269,7 +281,10 @@ TWeakObjectPtr<UAnimSequence> FHandSocketComponentDetails::SaveAnimationAsset(co
 
 		// init notifies
 		AnimationObject->InitializeNotifyTrack();
-		AnimationObject->PostProcessSequence();
+		//#TODO: 5.1, need to figure out what they replaced this with
+		//PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			//AnimationObject->PostProcessSequence();
+		//PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		AnimationObject->MarkPackageDirty();
 
 		//if (bAutoSaveAsset)
@@ -280,7 +295,11 @@ TWeakObjectPtr<UAnimSequence> FHandSocketComponentDetails::SaveAnimationAsset(co
 
 			double StartTime = FPlatformTime::Seconds();
 
-			UPackage::SavePackage(Package, NULL, RF_Standalone, *PackageFileName, GError, nullptr, false, true, SAVE_NoError);
+			FSavePackageArgs PackageArguments;
+			PackageArguments.SaveFlags = RF_Standalone;
+			PackageArguments.SaveFlags = SAVE_NoError;
+			UPackage::SavePackage(Package, NULL, *PackageFileName, PackageArguments);
+			//UPackage::SavePackage(Package, NULL, RF_Standalone, *PackageFileName, GError, nullptr, false, true, SAVE_NoError);
 
 			double ElapsedTime = FPlatformTime::Seconds() - StartTime;
 			UE_LOG(LogAnimation, Log, TEXT("Animation Recorder saved %s in %0.2f seconds"), *PackageName, ElapsedTime);
@@ -292,7 +311,6 @@ TWeakObjectPtr<UAnimSequence> FHandSocketComponentDetails::SaveAnimationAsset(co
 
 	return FinalAnimation;
 }
-
 TSharedRef< IDetailCustomization > FHandSocketComponentDetails::MakeInstance()
 {
     return MakeShareable(new FHandSocketComponentDetails);
@@ -393,6 +411,7 @@ void FHandSocketComponentDetails::OnLockedStateUpdated(IDetailLayoutBuilder* Lay
 			{
 				Owner->Modify();
 			}
+
 			HandSocketComponent->HandRelativePlacement = HandSocketComponent->HandRelativePlacement * HandSocketComponent->GetRelativeTransform();// HandSocketComponent->GetComponentTransform();
 			HandSocketComponent->bDecoupled = true;
 
@@ -421,7 +440,7 @@ void FHandSocketComponentDetails::OnLockedStateUpdated(IDetailLayoutBuilder* Lay
 			}
 			HandSocketComponent->HandRelativePlacement = HandSocketComponent->HandRelativePlacement.GetRelativeTransform(HandSocketComponent->GetRelativeTransform());
 			HandSocketComponent->bDecoupled = false;
-
+			
 			TSharedPtr<FComponentVisualizer> Visualizer = GUnrealEd->FindComponentVisualizer(HandSocketComponent->GetClass());
 			FHandSocketVisualizer* HandVisualizer = (FHandSocketVisualizer*)Visualizer.Get();
 
@@ -535,12 +554,12 @@ void FHandSocketComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailB
 	ShowVisualizationProperty->SetOnPropertyValueChanged(OnShowVisChangedDelegate);
 
 	DetailBuilder.EditCategory("Hand Animation")
-		.AddCustomRow(NSLOCTEXT("HandSocketDetails", "UpdateHandSocket", "Save Current Pose"))
+		.AddCustomRow(LOCTEXT("UpdateHandSocketRow", "Save Current Pose"))
 		.NameContent()
 		[
 			SNew(STextBlock)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-		.Text(NSLOCTEXT("HandSocketDetails", "UpdateHandSocket", "Save Current Pose"))
+		.Text(LOCTEXT("UpdateHandSocketText", "Save Current Pose"))
 		]
 	.ValueContent()
 		.MaxDesiredWidth(125.f)
@@ -554,7 +573,7 @@ void FHandSocketComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailB
 		[
 			SNew(STextBlock)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-		.Text(NSLOCTEXT("HandSocketDetails", "UpdateHandSocket", "Save"))
+		.Text(LOCTEXT("UpdateHandSocketButton", "Save"))
 		]
 		];
 }
@@ -681,7 +700,7 @@ void SCreateHandAnimationDlg::Construct(const FArguments& InArgs)
 		.Padding(2)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
 			SNew(SVerticalBox)
 
@@ -738,14 +757,14 @@ void SCreateHandAnimationDlg::Construct(const FArguments& InArgs)
 		.Padding(5)
 		[
 			SNew(SUniformGridPanel)
-			.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-		.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-		.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+			.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+		.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+		.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
 		+ SUniformGridPanel::Slot(0, 0)
 		[
 			SNew(SButton)
 			.HAlign(HAlign_Center)
-		.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+		.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 		.Text(LOCTEXT("OK", "OK"))
 		.OnClicked(this, &SCreateHandAnimationDlg::OnButtonClick, EAppReturnType::Ok)
 		]
@@ -753,7 +772,7 @@ void SCreateHandAnimationDlg::Construct(const FArguments& InArgs)
 		[
 			SNew(SButton)
 			.HAlign(HAlign_Center)
-		.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+		.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 		.Text(LOCTEXT("Cancel", "Cancel"))
 		.OnClicked(this, &SCreateHandAnimationDlg::OnButtonClick, EAppReturnType::Cancel)
 		]

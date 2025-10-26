@@ -1,8 +1,12 @@
 // Copyright 1998-2016 Epic Games, Inc. All Rights Reserved.
 
 #include "VRPlayerController.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VRPlayerController)
+
 #include "AI/NavigationSystemBase.h"
 #include "VRBaseCharacterMovementComponent.h"
+#include "VRPathFollowingComponent.h"
+//#include "VRBPDatatypes.h"
 #include "Engine/Player.h"
 //#include "Runtime/Engine/Private/EnginePrivate.h"
 
@@ -112,7 +116,7 @@ void AVRPlayerController::PlayerTick(float DeltaTime)
 	}
 }
 
-UVRLocalPlayer::UVRLocalPlayer(const FObjectInitializer& ObjectInitializer)
+UVRLocalPlayer::UVRLocalPlayer(const FObjectInitializer & ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 }

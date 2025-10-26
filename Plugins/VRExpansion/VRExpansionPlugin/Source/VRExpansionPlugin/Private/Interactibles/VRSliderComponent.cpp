@@ -1,7 +1,11 @@
 // Copyright 1998-2016 Epic Games, Inc. All Rights Reserved.
 
 #include "Interactibles/VRSliderComponent.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VRSliderComponent)
+
 #include "VRExpansionFunctionLibrary.h"
+#include "Components/SplineComponent.h"
+#include "GripMotionControllerComponent.h"
 #include "Net/UnrealNetwork.h"
 
   //=============================================================================
@@ -98,11 +102,11 @@ void UVRSliderComponent::PreReplication(IRepChangedPropertyTracker & ChangedProp
 	//DOREPLIFETIME_ACTIVE_OVERRIDE(UVRSliderComponent, SplineComponentToFollow, bReplicateMovement);
 
 	// Don't replicate if set to not do it
-	DOREPLIFETIME_ACTIVE_OVERRIDE(UVRSliderComponent, GameplayTags, bRepGameplayTags);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(UVRSliderComponent, GameplayTags, bRepGameplayTags);
 
-	DOREPLIFETIME_ACTIVE_OVERRIDE_PRIVATE_PROPERTY(USceneComponent, RelativeLocation, bReplicateMovement);
-	DOREPLIFETIME_ACTIVE_OVERRIDE_PRIVATE_PROPERTY(USceneComponent, RelativeRotation, bReplicateMovement);
-	DOREPLIFETIME_ACTIVE_OVERRIDE_PRIVATE_PROPERTY(USceneComponent, RelativeScale3D, bReplicateMovement);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(USceneComponent, RelativeLocation, bReplicateMovement);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(USceneComponent, RelativeRotation, bReplicateMovement);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(USceneComponent, RelativeScale3D, bReplicateMovement);
 }
 
 void UVRSliderComponent::OnRegister()
@@ -451,8 +455,9 @@ void UVRSliderComponent::CheckSliderProgress()
 	}
 	else if ((LastSliderProgressState != CurrentSliderProgress) || bHitEventThreshold)
 	{
+		float ModValue = FMath::Fmod(CurrentSliderProgress, SnapIncrement);
 		if ((!bSliderUsesSnapPoints && (CurrentSliderProgress == 1.0f || CurrentSliderProgress == 0.0f)) ||
-			(bSliderUsesSnapPoints && SnapIncrement > 0.f && FMath::IsNearlyEqual(FMath::Fmod(CurrentSliderProgress, SnapIncrement), 0.0f, 0.001f))
+			(bSliderUsesSnapPoints && SnapIncrement > 0.f && (FMath::IsNearlyEqual(ModValue, 0.0f, 0.001f) || FMath::IsNearlyEqual(ModValue, SnapIncrement, 0.00001f)))
 			)
 		{
 			// I am working with exacts here because of the clamping, it should actually work with no precision issues
@@ -729,7 +734,12 @@ FVector UVRSliderComponent::ClampSlideVector(FVector ValueToClamp)
 	FVector MinScale = (bUseLegacyLogic ? MinSlideDistance : MinSlideDistance.GetAbs()) * fScaleFactor;
 
 	FVector Dist = (bUseLegacyLogic ? (MinSlideDistance + MaxSlideDistance) : (MinSlideDistance.GetAbs() + MaxSlideDistance.GetAbs())) * fScaleFactor;
-	FVector Progress = (ValueToClamp - (-MinScale)) / Dist;
+	FVector Progress{
+	Dist.X > 0.0f ? (ValueToClamp.X - (-MinScale.X)) / Dist.X : 0.f,
+	Dist.Y > 0.0f ? (ValueToClamp.Y - (-MinScale.Y)) / Dist.Y : 0.f,
+	Dist.Z > 0.0f ? (ValueToClamp.Z - (-MinScale.Z)) / Dist.Z : 0.f,
+	};
+
 
 	if (bSliderUsesSnapPoints)
 	{
@@ -772,6 +782,50 @@ float UVRSliderComponent::GetDistanceAlongSplineAtSplineInputKey(float InKey) co
 	}
 
 	return 0.0f;
+}
+
+FVector UVRSliderComponent::GetPerAxisSliderProgress()
+{
+	// If we are following a spline per axis makes no sense, return overall progress on all axis's
+	if (SplineComponentToFollow != nullptr)
+	{
+		return FVector(CurrentSliderProgress);
+	}
+
+	// Get our relative space location
+	FTransform ParentTransform = UVRInteractibleFunctionLibrary::Interactible_GetCurrentParentTransform(this);
+	FTransform CurrentRelativeTransform = InitialRelativeTransform * ParentTransform;
+	FVector CalculatedLocation = CurrentRelativeTransform.InverseTransformPosition(this->GetComponentLocation());
+	CalculatedLocation = bSlideDistanceIsInParentSpace ? CalculatedLocation * InitialRelativeTransform.GetScale3D() : CalculatedLocation;
+
+	// Should need the clamp normally, but if someone is manually setting locations it could go out of bounds
+	FVector Progress;
+
+	if (bUseLegacyLogic)
+	{
+		if(MinSlideDistance.X != 0.0f || MaxSlideDistance.X != 0.0)
+			Progress.X = FMath::Clamp(FMath::Abs(-MinSlideDistance.X - CalculatedLocation.X) / FMath::Abs(-MinSlideDistance.X - MaxSlideDistance.X), 0.0f, 1.0f);
+		if (MinSlideDistance.Y != 0.0f || MaxSlideDistance.Y != 0.0)
+			Progress.Y = FMath::Clamp(FMath::Abs(-MinSlideDistance.Y - CalculatedLocation.Y) / FMath::Abs(-MinSlideDistance.Y - MaxSlideDistance.Y), 0.0f, 1.0f);
+		if (MinSlideDistance.Z != 0.0f || MaxSlideDistance.Z != 0.0)
+			Progress.Z = FMath::Clamp(FMath::Abs(-MinSlideDistance.Z - CalculatedLocation.Z) / FMath::Abs(-MinSlideDistance.Z - MaxSlideDistance.Z), 0.0f, 1.0f);
+	}
+	else
+	{
+		FVector MinABS = MinSlideDistance.GetAbs();
+		FVector MaxABS = MaxSlideDistance.GetAbs();
+
+		if (MinSlideDistance.X != 0.0f || MaxSlideDistance.X != 0.0)
+			Progress.X = FMath::Clamp(FMath::Abs(-MinABS.X - CalculatedLocation.X) / FMath::Abs(-MinABS.X - MaxABS.X), 0.0f, 1.0f);
+		if (MinSlideDistance.Y != 0.0f || MaxSlideDistance.Y != 0.0)
+			Progress.Y = FMath::Clamp(FMath::Abs(-MinABS.Y - CalculatedLocation.Y) / FMath::Abs(-MinABS.Y - MaxABS.Y), 0.0f, 1.0f);
+		if (MinSlideDistance.Z != 0.0f || MaxSlideDistance.Z != 0.0)
+			Progress.Z = FMath::Clamp(FMath::Abs(-MinABS.Z - CalculatedLocation.Z) / FMath::Abs(-MinABS.Z - MaxABS.Z), 0.0f, 1.0f);
+	}
+
+	// Don't setup snap point calculations for this function for now
+
+	return Progress;
 }
 
 float UVRSliderComponent::GetCurrentSliderProgress(FVector CurLocation, bool bUseKeyInstead, float CurKey)

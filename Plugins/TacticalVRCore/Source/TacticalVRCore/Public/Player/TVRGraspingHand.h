@@ -11,6 +11,7 @@
 
 #include "TVRGraspingHand.generated.h"
 
+enum class ETVRHandSwapType: uint8;
 
 UENUM(BlueprintType)
 enum class ETriggerIndices: uint8
@@ -93,6 +94,16 @@ public:
 	UPROPERTY(Category="Hand", BlueprintReadOnly)
 	float TriggerPress;
 
+
+	ETVRHandSwapType PendingHandSwap;
+	bool bPendingReinitSecondary;
+	FTransform PendingRelativeMeshTransform;
+
+	bool bInitializedConstraint;
+	FTransform Frame1;
+	FTransform Frame2;
+	
+	
 protected:	
 	/** Hand Type Left/Right of the corresponding motion controller */
 	EControllerHand HandType;
@@ -241,6 +252,10 @@ public:
 	void PostHandleGripped();
 	
 	virtual void InitializeAndAttach(const FBPActorGripInformation& GripInfo, bool bIsSecondaryGrip, bool bSkipEvaluation = false);
+
+	void SnapShotCustomPose();
+	void FreezePose();
+	
 protected:
 	
 	UFUNCTION(Category="Hand", BlueprintCallable)
@@ -250,6 +265,9 @@ protected:
 
 	UFUNCTION(Category="Hand", BlueprintCallable)
 	virtual void OnGrippedObject(const struct FBPActorGripInformation& GripInfo);
+	
+	virtual void OnDelayedGrippedObject(const struct FBPActorGripInformation GripInfo);
+	
 	UFUNCTION(Category="Hand", BlueprintCallable)
 	virtual void OnDroppedObject(const struct FBPActorGripInformation& GripInfo, bool bWasSocketed);
 	UFUNCTION(Category="Hand", BlueprintCallable)
@@ -268,6 +286,7 @@ protected:
 	 * Active Physics wrapped in a function to call after one frame
 	 */
 	virtual void DelayedActivePhysics();
+	virtual void DelayedActivePhysics(FTimerDelegate Then);
 
 	/**
 	 * Start Lerping Hand
@@ -287,6 +306,8 @@ protected:
 	 */
 	virtual void UpdateLerpHand(float DeltaTime);
 	virtual void FinishedLerpHand();
+	virtual void FinishedLerpHand(FTimerDelegate Then);
+	FTimerHandle StartLerpTimer;
 
 	virtual void StartCurl();
 	virtual void StopCurl();

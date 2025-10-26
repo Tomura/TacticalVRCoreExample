@@ -15,7 +15,7 @@
 #include "OpenXRHandPoseComponent.generated.h"
 
 USTRUCT(BlueprintType, Category = "VRExpansionFunctions|OpenXR|HandSkeleton")
-struct OPENXREXPANSIONPLUGIN_API FBPSkeletalRepContainer
+struct OPENXREXPANSIONPLUGIN_API FBPXRSkeletalRepContainer
 {
 	GENERATED_BODY()
 public:
@@ -27,6 +27,7 @@ public:
 		bool bAllowDeformingMesh;
 
 	// If true we will skip sending the 4 metacarpal bones that ue4 doesn't need, (STEAMVR skeletons need this disabled!)
+	// Only really used for the older UE4 skeleton
 	UPROPERTY(Transient, NotReplicated)
 		bool bEnableUE4HandRepSavings;
 
@@ -37,11 +38,11 @@ public:
 		uint8 BoneCount;
 
 
-	FBPSkeletalRepContainer()
+	FBPXRSkeletalRepContainer()
 	{
 		TargetHand = EVRSkeletalHandIndex::EActionHandIndex_Left;
 		bAllowDeformingMesh = false;
-		bEnableUE4HandRepSavings = true;
+		bEnableUE4HandRepSavings = false;
 		BoneCount = 0;
 	}
 
@@ -51,13 +52,13 @@ public:
 	}
 
 	void CopyForReplication(FBPOpenXRActionSkeletalData& Other);
-	static void CopyReplicatedTo(const FBPSkeletalRepContainer& Container, FBPOpenXRActionSkeletalData& Other);
+	static void CopyReplicatedTo(const FBPXRSkeletalRepContainer& Container, FBPOpenXRActionSkeletalData& Other);
 
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
 };
 
 template<>
-struct TStructOpsTypeTraits< FBPSkeletalRepContainer > : public TStructOpsTypeTraitsBase2<FBPSkeletalRepContainer>
+struct TStructOpsTypeTraits< FBPXRSkeletalRepContainer > : public TStructOpsTypeTraitsBase2<FBPXRSkeletalRepContainer>
 {
 	enum
 	{
@@ -188,14 +189,15 @@ public:
 	// Need this as I can't think of another way for an actor component to make sure it isn't on the server
 	inline bool IsLocallyControlled() const
 	{
-#if ENGINE_MAJOR_VERSION >= 4 && ENGINE_MINOR_VERSION >= 22
+#if ENGINE_MAJOR_VERSION > 4 || (ENGINE_MAJOR_VERSION == 4 && ENGINE_MINOR_VERSION >= 22)
 		const AActor* MyOwner = GetOwner();
 		return MyOwner->HasLocalNetOwner();
 #else
 		// I like epics new authority check more than mine
 		const AActor* MyOwner = GetOwner();
 		const APawn* MyPawn = Cast<APawn>(MyOwner);
-		return MyPawn ? MyPawn->IsLocallyControlled() : (MyOwner && MyOwner->Role == ENetRole::ROLE_Authority);
+
+		return MyPawn ? MyPawn->IsLocallyControlled() : (MyOwner && MyOwner->GetLocalRole() == ENetRole::ROLE_Authority);
 #endif
 	}
 
@@ -213,19 +215,16 @@ public:
 		TArray<FBPOpenXRActionSkeletalData> HandSkeletalActions;
 
 	UPROPERTY(Replicated, Transient, ReplicatedUsing = OnRep_SkeletalTransformLeft)
-		FBPSkeletalRepContainer LeftHandRep;
+		FBPXRSkeletalRepContainer LeftHandRep;
 
 	UPROPERTY(Replicated, Transient, ReplicatedUsing = OnRep_SkeletalTransformRight)
-		FBPSkeletalRepContainer RightHandRep;
+		FBPXRSkeletalRepContainer RightHandRep;
 
 	UFUNCTION(Unreliable, Server, WithValidation)
-		void Server_SendSkeletalTransforms(const FBPSkeletalRepContainer& SkeletalInfo);
+		void Server_SendSkeletalTransforms(const FBPXRSkeletalRepContainer& SkeletalInfo);
 
 	bool bLerpingPositionLeft;
-	bool bReppedOnceLeft;
-
 	bool bLerpingPositionRight;
-	bool bReppedOnceRight;
 
 	struct FTransformLerpManager
 	{
@@ -233,17 +232,25 @@ public:
 		bool bLerping;
 		float UpdateCount;
 		float UpdateRate;
+		TArray<FTransform> OldTransforms;
 		TArray<FTransform> NewTransforms;
 
 		FTransformLerpManager();
-		void NotifyNewData(FBPOpenXRActionSkeletalData& ActionInfo, int NetUpdateRate);
+		void PreCopyNewData(FBPOpenXRActionSkeletalData& ActionInfo, int NetUpdateRate, bool bExponentialSmoothing);
+		void NotifyNewData(FBPOpenXRActionSkeletalData& ActionInfo, int NetUpdateRate, bool bExponentialSmoothing);
 
-		FORCEINLINE void BlendBone(uint8 BoneToBlend, FBPOpenXRActionSkeletalData& ActionInfo, float & LerpVal)
+		FORCEINLINE void BlendBone(uint8 BoneToBlend, FBPOpenXRActionSkeletalData& ActionInfo, float& LerpVal, bool bExponentialSmoothing)
 		{
-			ActionInfo.SkeletalTransforms[BoneToBlend].Blend(ActionInfo.OldSkeletalTransforms[BoneToBlend], NewTransforms[BoneToBlend], LerpVal);
+			ActionInfo.SkeletalTransforms[BoneToBlend].Blend(OldTransforms[BoneToBlend], NewTransforms[BoneToBlend], LerpVal);
+
+			if (bExponentialSmoothing)
+			{
+				// Saving base back out for exponential
+				OldTransforms[BoneToBlend] = ActionInfo.SkeletalTransforms[BoneToBlend];
+			}
 		}
 
-		void UpdateManager(float DeltaTime, FBPOpenXRActionSkeletalData& ActionInfo);
+		void UpdateManager(float DeltaTime, FBPOpenXRActionSkeletalData& ActionInfo, UOpenXRHandPoseComponent * ParentComp);
 
 	}; 
 	
@@ -257,12 +264,18 @@ public:
 		{
 			if (HandSkeletalActions[i].TargetHand == LeftHandRep.TargetHand)
 			{
-				HandSkeletalActions[i].OldSkeletalTransforms = HandSkeletalActions[i].SkeletalTransforms;
+				if (bSmoothReplicatedSkeletalData)
+				{
+					LeftHandRepManager.PreCopyNewData(HandSkeletalActions[i], ReplicationRateForSkeletalAnimations, bUseExponentialSmoothing);
+				}
 
-				FBPSkeletalRepContainer::CopyReplicatedTo(LeftHandRep, HandSkeletalActions[i]);
+				FBPXRSkeletalRepContainer::CopyReplicatedTo(LeftHandRep, HandSkeletalActions[i]);
 				
-				if(bSmoothReplicatedSkeletalData)
-					LeftHandRepManager.NotifyNewData(HandSkeletalActions[i], ReplicationRateForSkeletalAnimations);
+				if (bSmoothReplicatedSkeletalData)
+				{
+					LeftHandRepManager.NotifyNewData(HandSkeletalActions[i], ReplicationRateForSkeletalAnimations, bUseExponentialSmoothing);
+				}
+
 				break;
 			}
 		}
@@ -275,12 +288,17 @@ public:
 		{
 			if (HandSkeletalActions[i].TargetHand == RightHandRep.TargetHand)
 			{
-				HandSkeletalActions[i].OldSkeletalTransforms = HandSkeletalActions[i].SkeletalTransforms;
+				if (bSmoothReplicatedSkeletalData)
+				{
+					RightHandRepManager.PreCopyNewData(HandSkeletalActions[i], ReplicationRateForSkeletalAnimations, bUseExponentialSmoothing);
+				}
 
-				FBPSkeletalRepContainer::CopyReplicatedTo(RightHandRep, HandSkeletalActions[i]);
+				FBPXRSkeletalRepContainer::CopyReplicatedTo(RightHandRep, HandSkeletalActions[i]);
 				
 				if (bSmoothReplicatedSkeletalData)
-					RightHandRepManager.NotifyNewData(HandSkeletalActions[i], ReplicationRateForSkeletalAnimations);
+				{
+					RightHandRepManager.NotifyNewData(HandSkeletalActions[i], ReplicationRateForSkeletalAnimations, bUseExponentialSmoothing);
+				}
 				break;
 			}
 		}
@@ -293,6 +311,14 @@ public:
 	// If true we will lerp between updates of the skeletal mesh transforms and smooth the result
 	UPROPERTY(EditAnywhere, Category = SkeletalData)
 		bool bSmoothReplicatedSkeletalData;
+
+	// If true then we will use exponential smoothing with buffered correction
+	UPROPERTY(EditAnywhere, Category = "SkeletalData", meta = (editcondition = "bSmoothReplicatedSkeletalData"))
+		bool bUseExponentialSmoothing = false;
+
+	// Timestep of smoothing translation
+	UPROPERTY(EditAnywhere, Category = "SkeletalData", meta = (editcondition = "bUseExponentialSmoothing"))
+		float InterpolationSpeed = 25.0f;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SkeletalData)
 		float ReplicationRateForSkeletalAnimations;

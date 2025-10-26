@@ -33,7 +33,10 @@ ATVRCartridge::ATVRCartridge(const FObjectInitializer& OI) : Super(OI)
 	BuckshotSpread = 0.f;
 	SpentCartridgeMesh = nullptr;
 	bIsSpent = false;
+	BaseDamage = 35.f;
+	
 	TraceDistance = 5000.f;
+	FlyByThresholdDistance = 150.f;
 }
 
 // Called when the game starts or when spawned
@@ -70,7 +73,7 @@ void ATVRCartridge::ClosestGripSlotInRange_Implementation(FVector WorldLocation,
                                                              bool& bHadSlotInRange, FTransform& SlotWorldTransform, FName& SlotName,
                                                              UGripMotionControllerComponent* CallingController, FName OverridePrefix)
 {
-	if(UHandSocketComponent* HS = ITVRHandSocketInterface::Execute_GetHandSocket(this, NAME_None))
+	if(UHandSocketComponent* HS = ITVRHandSocketInterface::Execute_GetHandSocket(this, EName::None))
 	{
 		bHadSlotInRange = true;
 		SlotName = FName("HandSocket");
@@ -78,7 +81,7 @@ void ATVRCartridge::ClosestGripSlotInRange_Implementation(FVector WorldLocation,
 	}
 	else
 	{
-		SlotName = NAME_None;
+		SlotName = EName::None;
 		bHadSlotInRange = false;
 	}
 }
@@ -111,5 +114,10 @@ const FImpactDecalData* ATVRCartridge::GetImpactDecal(EPhysicalSurface SurfaceTy
 	}
 	// there's nothing setup
 	return nullptr;
+}
+
+float ATVRCartridge::GetFlyByVolume(const float Dist) const
+{
+	return FlyBySoundVolume.GetRichCurveConst()->Eval(Dist);
 }
 

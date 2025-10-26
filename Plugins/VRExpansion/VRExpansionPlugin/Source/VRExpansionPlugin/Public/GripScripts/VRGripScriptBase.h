@@ -3,18 +3,18 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Engine/Engine.h"
+//#include "Engine/Engine.h"
 #include "UObject/Object.h"
 #include "VRBPDatatypes.h"
-#include "Components/PrimitiveComponent.h"
-#include "GameFramework/Actor.h"
 #include "Tickable.h"
-#include "Net/UnrealNetwork.h"
 
 #include "VRGripScriptBase.generated.h"
 
 class UGripMotionControllerComponent;
 class UVRGripInterface;
+class UPrimitiveComponent;
+class AActor;
+
 
 UENUM(Blueprintable)
 enum class EGSTransformOverrideType : uint8
@@ -54,6 +54,27 @@ public:
 	// Is currently active helper variable, returned from IsScriptActive()
 	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "GSSettings")
 	bool bIsActive;
+
+private:
+	// If we should replicate, if false we will never be added to our parents list.
+	UPROPERTY(Replicated, EditDefaultsOnly, BlueprintReadOnly, Category = "GSSettings|Replication", meta = (AllowPrivateAccess = "true"))
+	bool bReplicates = false;
+public:
+
+	/** Enable or disable replication. This is the equivalent of RemoteRole for actors (only a bool is required for components) */
+	UFUNCTION(BlueprintCallable, Category = "Components")
+		void SetIsReplicated(bool ShouldReplicate);
+
+	/** Returns whether replication is enabled or not. */
+	UFUNCTION(BlueprintCallable, Category = "Components")
+	bool GetIsReplicated() const
+	{
+		return bReplicates;
+	}
+
+	// Replication Condition (If using subobject replication list)
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "GSSettings|Replication")
+	TEnumAsByte<ELifetimeCondition> ReplicationCondition = ELifetimeCondition::COND_None;
 
 	// Returns if the script is going to modify the world transform of the grip
 	EGSTransformOverrideType GetWorldTransformOverrideType();
@@ -128,8 +149,13 @@ public:
 	bool Wants_DenyTeleport(UGripMotionControllerComponent * Controller);
 	virtual bool Wants_DenyTeleport_Implementation(UGripMotionControllerComponent* Controller);
 
+#if UE_WITH_IRIS
+	/** Register all replication fragments */
+	virtual void RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags) override;
+#endif // UE_WITH_IRIS
+
 	virtual void GetLifetimeReplicatedProps(TArray< class FLifetimeProperty > & OutLifetimeProps) const override;
-	
+
 	// doesn't currently compile in editor builds, not sure why the linker is screwing up there but works elsewhere
 	//virtual void PreReplication(IRepChangedPropertyTracker & ChangedPropertyTracker);
 	virtual bool CallRemoteFunction(UFunction * Function, void * Parms, FOutParmRec * OutParms, FFrame * Stack) override;
@@ -200,6 +226,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "VRGripScript")
 		bool IsServer();
 
+	virtual void BeginDestroy();
 	void EndPlay(const EEndPlayReason::Type EndPlayReason);
 
 	// Not all scripts will require this function, specific ones that use things like Lever logic however will. Best to call it.

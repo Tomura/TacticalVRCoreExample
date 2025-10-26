@@ -3,17 +3,16 @@
 #pragma once
 #include "CoreMinimal.h"
 #include "VRBPDatatypes.h"
-#include "Navigation/PathFollowingComponent.h"
 #include "VRBaseCharacterMovementComponent.h"
 #include "ReplicatedVRCameraComponent.h"
-#include "ParentRelativeAttachmentComponent.h"
-#include "GripMotionControllerComponent.h"
 #include "GameFramework/Character.h"
-#include "GameFramework/Controller.h"
-#include "Components/CapsuleComponent.h"
+#include "Navigation/PathFollowingComponent.h"
 #include "VRBaseCharacter.generated.h"
 
 class AVRPlayerController;
+class UGripMotionControllerComponent;
+class UParentRelativeAttachmentComponent;
+class AController;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogBaseVRCharacter, Log, All);
 
@@ -48,7 +47,7 @@ public:
 		float PausedTrackingRot;
 
 	UPROPERTY(Transient)
-		AActor* Owner;
+		TObjectPtr<AActor> Owner;
 
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
 	{
@@ -137,7 +136,7 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "CharacterSeatInfo")
 		FTransform_NetQuantize InitialRelCameraTransform;
 	UPROPERTY(BlueprintReadOnly, Category = "CharacterSeatInfo")
-		USceneComponent* SeatParent;
+		TObjectPtr<USceneComponent> SeatParent;
 	UPROPERTY(BlueprintReadOnly, Category = "CharacterSeatInfo")
 		EVRConjoinedMovementModes PostSeatedMovementMode;
 
@@ -278,6 +277,11 @@ public:
 	UPROPERTY(Transient, DuplicateTransient)
 		AVRPlayerController* OwningVRPlayerController;
 
+	// If true then we will retain roomscale tracking in relative space of the character.
+	// If false than the movement component will offset to the hmd tracking and the tracking will be nulled out
+	UPROPERTY(Category = VRBaseCharacter, EditAnywhere, BlueprintReadOnly)
+		bool bRetainRoomscale = true;
+
 	//virtual void CacheInitialMeshOffset(FVector MeshRelativeLocation, FRotator MeshRelativeRotation) override;
 	virtual void PostInitializeComponents() override;
 
@@ -294,6 +298,7 @@ public:
 	bool bTrackingPaused;
 	FVector PausedTrackingLoc;
 	float PausedTrackingRot;
+	
 
 	// Injecting our custom teleport notification
 	virtual void OnRep_ReplicatedMovement() override;
@@ -334,19 +339,7 @@ public:
 		FVRReplicatedCapsuleHeight ReplicatedCapsuleHeight;
 
 	UFUNCTION()
-	void OnRep_CapsuleHeight()
-	{
-		if (!VRReplicateCapsuleHeight)
-			return;
-
-		if (UCapsuleComponent * Capsule = Cast<UCapsuleComponent>(GetRootComponent()))
-		{
-			if (ReplicatedCapsuleHeight.CapsuleHeight > 0.0f && !FMath::IsNearlyEqual(ReplicatedCapsuleHeight.CapsuleHeight, Capsule->GetUnscaledCapsuleHalfHeight()))
-			{
-				SetCharacterHalfHeightVR(ReplicatedCapsuleHeight.CapsuleHeight, false);
-			}
-		}
-	}
+	void OnRep_CapsuleHeight();
 
 	// Override this in c++ or blueprints to pass in an IK mesh to be used in some optimizations
 	// May be extended in the future
@@ -415,6 +408,9 @@ public:
 		return OffsetComponentToWorld.GetLocation();
 	}
 
+	// Returns the head location projected from the world offset (if applicable)
+	virtual FVector GetProjectedVRLocation() const;
+
 	// Gets the rotation of the HMD offset capsule
 	UFUNCTION(BlueprintPure, Category = "BaseVRCharacter|VRLocations")
 		FRotator GetVRRotation() const
@@ -460,10 +456,17 @@ public:
 	// Call to use an object
 	UPROPERTY(BlueprintAssignable, Category = "Seating")
 		FVRSeatThresholdChangedSignature OnSeatThreshholdChanged_Bind;
-	
+
+	virtual FVector GetTargetHeightOffset()
+	{
+		return FVector::ZeroVector;
+	}
+
 	void ZeroToSeatInformation()
 	{
+
 		SetSeatRelativeLocationAndRotationVR(FVector::ZeroVector);
+
 		NotifyOfTeleport();
 		//LeftMotionController->PostTeleportMoveGrippedObjects();
 		//RightMotionController->PostTeleportMoveGrippedObjects();
@@ -481,6 +484,9 @@ public:
 	UFUNCTION(BlueprintCallable, Server, Reliable, WithValidation, Category = "BaseVRCharacter", meta = (DisplayName = "ReZeroSeating"))
 		void Server_ReZeroSeating(FTransform_NetQuantize NewTargetTransform, FTransform_NetQuantize NewInitialRelCameraTransform, bool bZeroToHead = true);
 
+	// Snapturn update
+	UFUNCTION(Reliable, Server, WithValidation)
+		void Server_SeatedSnapTurn(float Yaw);
 
 	// Sets seated mode on the character and then fires off an event to handle any special setup
 	// Target Transform is for teleport location if standing up, or relative camera location when sitting down.
@@ -498,17 +504,25 @@ public:
 	void SetSeatRelativeLocationAndRotationVR(FVector LocDelta);
 
 	// Adds a rotation delta taking into account the HMD as a pivot point (also moves the actor), returns final location difference
+	// If bRotateAroundCapsule is true then it rotates around the offset capsule, otherwise it rotates around the camera
 	UFUNCTION(BlueprintCallable, Category = "BaseVRCharacter|VRLocations")
-		FVector AddActorWorldRotationVR(FRotator DeltaRot, bool bUseYawOnly = true);
+		FVector AddActorWorldRotationVR(FRotator DeltaRot, bool bUseYawOnly = true, bool bRotateAroundCapsule = true);
 
 	// Sets the actors rotation taking into account the HMD as a pivot point (also moves the actor), returns the location difference
 	// bAccountForHMDRotation sets the rot to have the HMD face the given rot, if it is false it ignores the HMD rotation
+	// If bRotateAroundCapsule is true then it rotates around the offset capsule, otherwise it rotates around the camera
 	UFUNCTION(BlueprintCallable, Category = "BaseVRCharacter|VRLocations")
-		FVector SetActorRotationVR(FRotator NewRot, bool bUseYawOnly = true, bool bAccountForHMDRotation = true);
+		FVector SetActorRotationVR(FRotator NewRot, bool bUseYawOnly = true, bool bAccountForHMDRotation = true, bool bRotateAroundCapsule = true);
 	
 	// Sets the actors rotation and location taking into account the HMD as a pivot point (also moves the actor), returns the location difference from the rotation
+	// If bRotateAroundCapsule is true then it rotates around the offset capsule, otherwise it rotates around the camera
 	UFUNCTION(BlueprintCallable, Category = "BaseVRCharacter|VRLocations")
-		FVector SetActorLocationAndRotationVR(FVector NewLoc, FRotator NewRot, bool bUseYawOnly = true, bool bAccountForHMDRotation = true, bool bTeleport = false);
+		FVector SetActorLocationAndRotationVR(FVector NewLoc, FRotator NewRot, bool bUseYawOnly = true, bool bAccountForHMDRotation = true, bool bTeleport = false, bool bRotateAroundCapsule = true);
+
+	// Sets the actors location taking into account the HMD as a pivot point, returns the location difference
+	// If SetCapsuleLocation is true then it offsets the capsule to the location, otherwise it will move the Camera itself to the location
+	UFUNCTION(BlueprintCallable, Category = "BaseVRCharacter|VRLocations")
+		FVector SetActorLocationVR(FVector NewLoc, bool bTeleport, bool bSetCapsuleLocation = true);
 
 	// Regenerates the base offsetcomponenttoworld that VR uses
 	UFUNCTION(BlueprintCallable, Category = "BaseVRCharacter|VRLocations")
@@ -528,27 +542,27 @@ public:
 	// The simplest method of doing this was applying the exact same offset as the mesh gets to a base component that
 	// tracked objects are attached to.
 	UPROPERTY(Category = VRBaseCharacter, VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-		USceneComponent * NetSmoother;
+		TObjectPtr<USceneComponent> NetSmoother;
 
 	// This is just a helper proxy component after the net smoother to make it easier to move tracking around for people
 	// but still maintain the netsmoothers functionality
 	UPROPERTY(Category = VRBaseCharacter, VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-		USceneComponent* VRProxyComponent;
+		TObjectPtr<USceneComponent> VRProxyComponent;
 
 	UPROPERTY(Category = VRBaseCharacter, VisibleAnywhere, Transient, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-		UVRBaseCharacterMovementComponent * VRMovementReference;
+		TObjectPtr<UVRBaseCharacterMovementComponent> VRMovementReference;
 
 	UPROPERTY(Category = VRBaseCharacter, VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-		UReplicatedVRCameraComponent * VRReplicatedCamera;
+		TObjectPtr<UReplicatedVRCameraComponent> VRReplicatedCamera;
 
 	UPROPERTY(Category = VRBaseCharacter, VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-		UParentRelativeAttachmentComponent * ParentRelativeAttachment;
+		TObjectPtr<UParentRelativeAttachmentComponent> ParentRelativeAttachment;
 
 	UPROPERTY(Category = VRBaseCharacter, VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-		UGripMotionControllerComponent * LeftMotionController;
+		TObjectPtr<UGripMotionControllerComponent> LeftMotionController;
 
 	UPROPERTY(Category = VRBaseCharacter, VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-		UGripMotionControllerComponent * RightMotionController;
+		TObjectPtr<UGripMotionControllerComponent> RightMotionController;
 
 	/** Name of the LeftMotionController component. Use this name if you want to use a different class (with ObjectInitializer.SetDefaultSubobjectClass). */
 	static FName LeftMotionControllerComponentName;
@@ -603,55 +617,18 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, Category = "VRBaseCharacter|Navigation")
 		void ReceiveNavigationMoveCompleted(EPathFollowingResult::Type PathingResult);
 
-	virtual void NavigationMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result)
-	{
-		this->Controller->StopMovement();
-		ReceiveNavigationMoveCompleted(Result.Code);
-	}
+	virtual void NavigationMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result);
 
 	UFUNCTION(BlueprintCallable, Category = "VRBaseCharacter|Navigation")
-	EPathFollowingStatus::Type GetMoveStatus() const
-	{
-		if (!Controller)
-			return EPathFollowingStatus::Idle;
-
-		if (UPathFollowingComponent* pathComp = Controller->FindComponentByClass<UPathFollowingComponent>())
-		{
-			pathComp->GetStatus();
-		}
-
-		return EPathFollowingStatus::Idle;
-	}
+	EPathFollowingStatus::Type GetMoveStatus() const;
 
 	/** Returns true if the current PathFollowingComponent's path is partial (does not reach desired destination). */
 	UFUNCTION(BlueprintCallable, Category = "VRBaseCharacter|Navigation")
-	bool HasPartialPath() const
-	{
-		if (!Controller)
-			return false;
-
-		if (UPathFollowingComponent* pathComp = Controller->FindComponentByClass<UPathFollowingComponent>())
-		{
-			return pathComp->HasPartialPath();
-		}
-
-		return false;
-	}
+	bool HasPartialPath() const;
 
 	// Instantly stops pathing
 	UFUNCTION(BlueprintCallable, Category = "VRBaseCharacter|Navigation")
-	void StopNavigationMovement()
-	{
-		if (!Controller)
-			return;
-
-		if (UPathFollowingComponent* pathComp = Controller->FindComponentByClass<UPathFollowingComponent>())
-		{
-			// @note FPathFollowingResultFlags::ForcedScript added to make AITask_MoveTo instances 
-			// not ignore OnRequestFinished notify that's going to be sent out due to this call
-			pathComp->AbortMove(*this, FPathFollowingResultFlags::MovementStop | FPathFollowingResultFlags::ForcedScript);
-		}
-	}
+	void StopNavigationMovement();
 
 	UPROPERTY(BlueprintReadWrite, Category = AI)
 		TSubclassOf<UNavigationQueryFilter> DefaultNavigationFilterClass;

@@ -1,22 +1,32 @@
 // Copyright 1998-2016 Epic Games, Inc. All Rights Reserved.
 
 #include "VRStereoWidgetComponent.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VRStereoWidgetComponent)
+
 #include "VRExpansionFunctionLibrary.h"
+#include "IXRTrackingSystem.h"
+#include "IXRCamera.h"
 #include "VRBaseCharacter.h"
+#include "VRCharacter.h"
+#include "VRRootComponent.h"
 #include "TextureResource.h"
 #include "Engine/Texture.h"
+#include "Engine/GameInstance.h"
+#include "SceneManagement.h"
+#include "Materials/Material.h"
 #include "IStereoLayers.h"
 #include "IHeadMountedDisplay.h"
-#include "IXRTrackingSystem.h"
 #include "PrimitiveViewRelevance.h"
 #include "PrimitiveSceneProxy.h"
 #include "UObject/ConstructorHelpers.h"
 #include "EngineGlobals.h"
 #include "MaterialShared.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "Engine/Engine.h"
-//#include "Widgets/SWindow.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/TextureRenderTarget2D.h"
+//#include "Widgets/SWindow.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Kismet/KismetSystemLibrary.h"
 //#include "Input/HittestGrid.h"
@@ -26,8 +36,14 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "Slate/SGameLayerManager.h"
 #include "Slate/SWorldWidgetScreenLayer.h"
+
 #include "Widgets/SViewport.h"
 #include "Widgets/SViewport.h"
+#include "Slate/WidgetRenderer.h"
+#include "Blueprint/UserWidget.h"
+#include "SceneInterface.h"
+
+#include "StereoLayerShapes.h"
 
 // CVars
 namespace StereoWidgetCvars
@@ -131,6 +147,7 @@ void UVRStereoWidgetRenderComponent::ReleaseResources()
 #if !UE_SERVER
 	FWorldDelegates::LevelRemovedFromWorld.RemoveAll(this);
 #endif
+
 	if (Widget)
 	{
 		Widget = nullptr;
@@ -200,7 +217,7 @@ void UVRStereoWidgetRenderComponent::InitWidget()
 
 	if (Widget != nullptr)
 	{
-		Widget->MarkPendingKill();
+		Widget->MarkAsGarbage();
 		Widget = nullptr;
 	}
 
@@ -329,13 +346,12 @@ void UVRStereoWidgetRenderComponent::RenderWidget(float DeltaTime)
 		const EPixelFormat requestedFormat = FSlateApplication::Get().GetRenderer()->GetSlateRecommendedColorFormat();
 		RenderTarget = NewObject<UTextureRenderTarget2D>();
 		check(RenderTarget);
-		RenderTarget->AddToRoot();
 		RenderTarget->ClearColor = RenderTargetClearColor;
 		RenderTarget->TargetGamma = WidgetRenderGamma;
 		RenderTarget->InitCustomFormat(TextureSize.X, TextureSize.Y, requestedFormat /*PF_B8G8R8A8*/, false);
 		MarkStereoLayerDirty();
 	}
-	else if (RenderTarget->Resource->GetSizeX() != TextureSize.X || RenderTarget->Resource->GetSizeY() != TextureSize.Y)
+	else if (RenderTarget->GetResource()->GetSizeX() != TextureSize.X || RenderTarget->GetResource()->GetSizeY() != TextureSize.Y)
 	{
 		const EPixelFormat requestedFormat = FSlateApplication::Get().GetRenderer()->GetSlateRecommendedColorFormat();
 		RenderTarget->InitCustomFormat(TextureSize.X, TextureSize.Y, requestedFormat /*PF_B8G8R8A8*/, false);
@@ -370,7 +386,7 @@ UVRStereoWidgetComponent::UVRStereoWidgetComponent(const FObjectInitializer& Obj
 	, Priority(0)
 	, bIsDirty(true)
 	, bTextureNeedsUpdate(false)
-	, LayerId(0)
+	, LayerId(IStereoLayers::FLayerDesc::INVALID_LAYER_ID)
 	, LastTransform(FTransform::Identity)
 	, bLastVisible(false)
 {
@@ -401,7 +417,7 @@ void UVRStereoWidgetComponent::BeginDestroy()
 	if (LayerId && GEngine->StereoRenderingDevice.IsValid() && (StereoLayers = GEngine->StereoRenderingDevice->GetStereoLayers()) != nullptr)
 	{
 		StereoLayers->DestroyLayer(LayerId);
-		LayerId = 0;
+		LayerId = IStereoLayers::FLayerDesc::INVALID_LAYER_ID;
 	}
 
 	Super::BeginDestroy();
@@ -414,7 +430,7 @@ void UVRStereoWidgetComponent::OnUnregister()
 	if (LayerId && GEngine->StereoRenderingDevice.IsValid() && (StereoLayers = GEngine->StereoRenderingDevice->GetStereoLayers()) != nullptr)
 	{
 		StereoLayers->DestroyLayer(LayerId);
-		LayerId = 0;
+		LayerId = IStereoLayers::FLayerDesc::INVALID_LAYER_ID;
 	}
 
 	Super::OnUnregister();
@@ -436,9 +452,15 @@ void UVRStereoWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 
+	if (IsRunningDedicatedServer())
+	{
+		SetTickMode(ETickMode::Disabled);
+		return;
+	}
+
 	//bool bIsCurVis = IsWidgetVisible();
 
-	bool bIsVisible = IsVisible() && IsWidgetVisible() && !bIsSleeping;// && ((GetWorld()->TimeSince(GetLastRenderTime()) <= 0.5f));
+	bool bIsVisible = (bAlwaysVisible && !bIsSleeping)  || (IsVisible() && IsWidgetVisible() && !bIsSleeping);// && ((GetWorld()->TimeSince(GetLastRenderTime()) <= 0.5f));
 
 	// If we are set to not use stereo layers or we don't have a valid stereo layer device
 	if (
@@ -462,7 +484,7 @@ void UVRStereoWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 					if (StereoLayers)
 						StereoLayers->DestroyLayer(LayerId);
 				}
-				LayerId = 0;
+				LayerId = IStereoLayers::FLayerDesc::INVALID_LAYER_ID;
 			}
 		}
 
@@ -553,11 +575,31 @@ void UVRStereoWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 					bool bHandledTransform = false;
 					if (AVRBaseCharacter* BaseVRChar = Cast<AVRBaseCharacter>(mpawn))
 					{
-						if (USceneComponent* CameraParent = BaseVRChar->VRReplicatedCamera->GetAttachParent())
+						if (BaseVRChar->VRReplicatedCamera)
 						{
-							Transform = OffsetTransform.GetRelativeTransform(CameraParent->GetComponentTransform());
-							Transform = FTransform(FRotator(0.f, -180.f, 0.f)) * Transform;
-							bHandledTransform = true;
+							if (USceneComponent* CameraParent = BaseVRChar->VRReplicatedCamera->GetAttachParent())
+							{
+								FTransform DeltaTrans = FTransform::Identity;
+								if (!BaseVRChar->bRetainRoomscale)
+								{
+									FVector HMDLoc;
+									FQuat HMDRot;
+									GEngine->XRSystem->GetCurrentPose(IXRTrackingSystem::HMDDeviceId, HMDRot, HMDLoc);
+
+									HMDLoc.Z = 0.0f;
+
+									if (AVRCharacter* VRChar = Cast<AVRCharacter>(mpawn))
+									{
+										HMDLoc += UVRExpansionFunctionLibrary::GetHMDPureYaw_I(HMDRot.Rotator()).RotateVector(FVector(VRChar->VRRootReference->VRCapsuleOffset.X, VRChar->VRRootReference->VRCapsuleOffset.Y, 0.0f));
+									}
+
+									DeltaTrans = FTransform(FQuat::Identity, HMDLoc, FVector(1.0f));
+								}
+
+								Transform = OffsetTransform.GetRelativeTransform(CameraParent->GetComponentTransform());
+								Transform = (FTransform(FRotator(0.f, -180.f, 0.f)) * Transform) * DeltaTrans;
+								bHandledTransform = true;
+							}
 						}
 					}
 					else if (UCameraComponent* Camera = mpawn->FindComponentByClass<UCameraComponent>())
@@ -594,7 +636,7 @@ void UVRStereoWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 				if (LayerId)
 				{
 					StereoLayers->DestroyLayer(LayerId);
-					LayerId = 0;
+					LayerId = IStereoLayers::FLayerDesc::INVALID_LAYER_ID;
 				}
 				return;
 			}
@@ -618,7 +660,7 @@ void UVRStereoWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 	}
 
 	bool bCurrVisible = bIsVisible;
-	if (!RenderTarget || !RenderTarget->Resource)
+	if (!RenderTarget || !RenderTarget->GetResource())
 	{
 		bCurrVisible = false;
 	}
@@ -626,12 +668,13 @@ void UVRStereoWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 	if (bIsDirty)
 	{
 		// OpenXR doesn't take the transforms scale component into account for the stereo layer, so we need to scale the buffer instead
-		bool bScaleBuffer = false;
+		// Fixed? In 5.2, leaving code commented out in case I need to bring it back
+		/*bool bScaleBuffer = false;
 		static FName SystemName(TEXT("OpenXR"));
 		if (GEngine->XRSystem.IsValid() && (GEngine->XRSystem->GetSystemName() == SystemName))
 		{
 			bScaleBuffer = true;
-		}
+		}*/
 
 		IStereoLayers::FLayerDesc LayerDsec;
 		LayerDsec.Priority = Priority;
@@ -641,23 +684,23 @@ void UVRStereoWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 		if (bDelayForRenderThread && !LastTransform.Equals(FTransform::Identity))
 		{
 			LayerDsec.Transform = LastTransform;
-			if (bScaleBuffer)
+			/*if (bScaleBuffer)
 			{
 				LayerDsec.QuadSize = FVector2D(DrawSize) * FVector2D(LastTransform.GetScale3D());
-			}
+			}*/
 		}
 		else
 		{
 			LayerDsec.Transform = Transform;
-			if (bScaleBuffer)
+			/*if (bScaleBuffer)
 			{
 				LayerDsec.QuadSize = FVector2D(DrawSize) * FVector2D(Transform.GetScale3D());
-			}
+			}*/
 		}
 
 		if (RenderTarget)
 		{
-			LayerDsec.Texture = RenderTarget->Resource->TextureRHI;
+			LayerDsec.Texture = RenderTarget->GetResource()->TextureRHI;
 			LayerDsec.Flags |= (RenderTarget->GetMaterialType() == MCT_TextureExternal) ? IStereoLayers::LAYER_FLAG_TEX_EXTERNAL : 0;
 		}
 		// Forget the left texture implementation
@@ -702,7 +745,7 @@ void UVRStereoWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 			{
 				if (Shape)
 				{
-					Shape->MarkPendingKill();
+					Shape->MarkAsGarbage();
 				}
 
 				Cylinder = NewObject<UStereoLayerShapeCylinder>(this, NAME_None, RF_Public);
@@ -732,7 +775,7 @@ void UVRStereoWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 			{
 				if (Shape)
 				{
-					Shape->MarkPendingKill();
+					Shape->MarkAsGarbage();
 				}
 				Shape = NewObject<UStereoLayerShapeQuad>(this, NAME_None, RF_Public);
 			}
@@ -844,9 +887,9 @@ public:
 			PreviousLocalToWorld = GetLocalToWorld();
 		}
 
-		if (RenderTarget)//false)//RenderTarget)
+		if (RenderTarget)
 		{
-			FTextureResource* TextureResource = RenderTarget->Resource;
+			FTextureResource* TextureResource = RenderTarget->GetResource();
 			if (TextureResource)
 			{
 				if (GeometryMode == EWidgetGeometryMode::Plane)
@@ -864,10 +907,10 @@ public:
 
 						if (VisibilityMap & (1 << ViewIndex))
 						{
-							VertexIndices[0] = MeshBuilder.AddVertex(-FVector(0, U, V), FVector2D(0, 0), FVector(0, -1, 0), FVector(0, 0, -1), FVector(1, 0, 0), FColor::White);
-							VertexIndices[1] = MeshBuilder.AddVertex(-FVector(0, U, VL), FVector2D(0, 1), FVector(0, -1, 0), FVector(0, 0, -1), FVector(1, 0, 0), FColor::White);
-							VertexIndices[2] = MeshBuilder.AddVertex(-FVector(0, UL, VL), FVector2D(1, 1), FVector(0, -1, 0), FVector(0, 0, -1), FVector(1, 0, 0), FColor::White);
-							VertexIndices[3] = MeshBuilder.AddVertex(-FVector(0, UL, V), FVector2D(1, 0), FVector(0, -1, 0), FVector(0, 0, -1), FVector(1, 0, 0), FColor::White);
+							VertexIndices[0] = MeshBuilder.AddVertex(-FVector3f(0, U, V), FVector2f(0, 0), FVector3f(0, -1, 0), FVector3f(0, 0, -1), FVector3f(1, 0, 0), FColor::White);
+							VertexIndices[1] = MeshBuilder.AddVertex(-FVector3f(0, U, VL), FVector2f(0, 1), FVector3f(0, -1, 0), FVector3f(0, 0, -1), FVector3f(1, 0, 0), FColor::White);
+							VertexIndices[2] = MeshBuilder.AddVertex(-FVector3f(0, UL, VL), FVector2f(1, 1), FVector3f(0, -1, 0), FVector3f(0, 0, -1), FVector3f(1, 0, 0), FColor::White);
+							VertexIndices[3] = MeshBuilder.AddVertex(-FVector3f(0, UL, V), FVector2f(1, 0), FVector3f(0, -1, 0), FVector3f(0, 0, -1), FVector3f(1, 0, 0), FColor::White);
 
 							MeshBuilder.AddTriangle(VertexIndices[0], VertexIndices[1], VertexIndices[2]);
 							MeshBuilder.AddTriangle(VertexIndices[0], VertexIndices[2], VertexIndices[3]);
@@ -941,10 +984,10 @@ public:
 									LastTangentZ = TangentZ;
 								}
 
-								VertexIndices[0] = MeshBuilder.AddVertex(Vertex0, FVector2D(U0, 0), LastTangentX, LastTangentY, LastTangentZ, FColor::White);
-								VertexIndices[1] = MeshBuilder.AddVertex(Vertex1, FVector2D(U0, 1), LastTangentX, LastTangentY, LastTangentZ, FColor::White);
-								VertexIndices[2] = MeshBuilder.AddVertex(Vertex2, FVector2D(U1, 1), TangentX, TangentY, TangentZ, FColor::White);
-								VertexIndices[3] = MeshBuilder.AddVertex(Vertex3, FVector2D(U1, 0), TangentX, TangentY, TangentZ, FColor::White);
+								VertexIndices[0] = MeshBuilder.AddVertex((FVector3f)Vertex0, FVector2f(U0, 0), (FVector3f)LastTangentX, (FVector3f)LastTangentY, (FVector3f)LastTangentZ, FColor::White);
+								VertexIndices[1] = MeshBuilder.AddVertex((FVector3f)Vertex1, FVector2f(U0, 1), (FVector3f)LastTangentX, (FVector3f)LastTangentY, (FVector3f)LastTangentZ, FColor::White);
+								VertexIndices[2] = MeshBuilder.AddVertex((FVector3f)Vertex2, FVector2f(U1, 1), (FVector3f)TangentX, (FVector3f)TangentY, (FVector3f)TangentZ, FColor::White);
+								VertexIndices[3] = MeshBuilder.AddVertex((FVector3f)Vertex3, FVector2f(U1, 0), (FVector3f)TangentX, (FVector3f)TangentY, (FVector3f)TangentZ, FColor::White);
 
 								MeshBuilder.AddTriangle(VertexIndices[0], VertexIndices[1], VertexIndices[2]);
 								MeshBuilder.AddTriangle(VertexIndices[0], VertexIndices[2], VertexIndices[3]);
@@ -988,7 +1031,7 @@ public:
 				// Draw simple collision as wireframe if 'show collision', collision is enabled, and we are not using the complex as the simple
 				const bool bDrawSimpleWireframeCollision = InBodySetup->CollisionTraceFlag != ECollisionTraceFlag::CTF_UseComplexAsSimple;
 
-				if (FMath::Abs(GetLocalToWorld().Determinant()) < SMALL_NUMBER)
+				if (FMath::Abs(GetLocalToWorld().Determinant()) < UE_SMALL_NUMBER)
 				{
 					// Catch this here or otherwise GeomTransform below will assert
 					// This spams so commented out
@@ -1010,14 +1053,14 @@ public:
 						Collector.RegisterOneFrameMaterialProxy(SolidMaterialInstance);
 
 						FTransform GeomTransform(GetLocalToWorld());
-						InBodySetup->AggGeom.GetAggGeom(GeomTransform, GetWireframeColor().ToFColor(true), SolidMaterialInstance, false, true, DrawsVelocity(), ViewIndex, Collector);
+						InBodySetup->AggGeom.GetAggGeom(GeomTransform, GetWireframeColor().ToFColor(true), SolidMaterialInstance, false, true, AlwaysHasVelocity(), ViewIndex, Collector);
 					}
 					// wireframe
 					else
 					{
 						FColor CollisionColor = FColor(157, 149, 223, 255);
 						FTransform GeomTransform(GetLocalToWorld());
-						InBodySetup->AggGeom.GetAggGeom(GeomTransform, GetSelectionColor(CollisionColor, bProxyIsSelected, IsHovered()).ToFColor(true), nullptr, false, false, DrawsVelocity(), ViewIndex, Collector);
+						InBodySetup->AggGeom.GetAggGeom(GeomTransform, GetSelectionColor(CollisionColor, bProxyIsSelected, IsHovered()).ToFColor(true), nullptr, false, false, AlwaysHasVelocity(), ViewIndex, Collector);
 					}
 				}
 			}
@@ -1037,7 +1080,7 @@ public:
 		Result.bShadowRelevance = IsShadowCast(View);
 		Result.bTranslucentSelfShadow = bCastVolumetricTranslucentShadow;
 		Result.bEditorPrimitiveRelevance = false;
-		Result.bVelocityRelevance = IsMovable() && Result.bOpaque && Result.bRenderInMainPass;
+		Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
 
 		return Result;
 	}
@@ -1088,13 +1131,75 @@ FPrimitiveSceneProxy* UVRStereoWidgetComponent::CreateSceneProxy()
 
 	if (WidgetRenderer && GetSlateWindow() && GetSlateWindow()->GetContent() != SNullWidget::NullWidget)
 	{
-		RequestRedraw();
+		RequestRenderUpdate();
 		LastWidgetRenderTime = 0;
 
 		return new FStereoWidget3DSceneProxy(this, *WidgetRenderer->GetSlateRenderer());
 	}
 
+#if WITH_EDITOR
+	// make something so we can see this component in the editor
+	class FWidgetBoxProxy final : public FPrimitiveSceneProxy
+	{
+	public:
+		SIZE_T GetTypeHash() const override
+		{
+			static size_t UniquePointer;
+			return reinterpret_cast<size_t>(&UniquePointer);
+		}
+
+		FWidgetBoxProxy(const UWidgetComponent* InComponent)
+			: FPrimitiveSceneProxy(InComponent)
+			, BoxExtents(1.f, InComponent->GetCurrentDrawSize().X / 2.0f, InComponent->GetCurrentDrawSize().Y / 2.0f)
+		{
+			bWillEverBeLit = false;
+		}
+
+		virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override
+		{
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_BoxSceneProxy_GetDynamicMeshElements);
+
+			const FMatrix& LocalToWorld = GetLocalToWorld();
+
+			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+			{
+				if (VisibilityMap & (1 << ViewIndex))
+				{
+					const FSceneView* View = Views[ViewIndex];
+
+					const FLinearColor DrawColor = GetViewSelectionColor(FColor::White, *View, IsSelected(), IsHovered(), false, IsIndividuallySelected());
+
+					FPrimitiveDrawInterface* PDI = Collector.GetPDI(ViewIndex);
+					DrawOrientedWireBox(PDI, LocalToWorld.GetOrigin(), LocalToWorld.GetScaledAxis(EAxis::X), LocalToWorld.GetScaledAxis(EAxis::Y), LocalToWorld.GetScaledAxis(EAxis::Z), BoxExtents, DrawColor, SDPG_World);
+				}
+			}
+		}
+
+		virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override
+		{
+			FPrimitiveViewRelevance Result;
+			if (!View->bIsGameView)
+			{
+				// Should we draw this because collision drawing is enabled, and we have collision
+				const bool bShowForCollision = View->Family->EngineShowFlags.Collision && IsCollisionEnabled();
+				Result.bDrawRelevance = IsShown(View) || bShowForCollision;
+				Result.bDynamicRelevance = true;
+				Result.bShadowRelevance = IsShadowCast(View);
+				Result.bEditorPrimitiveRelevance = UseEditorCompositing(View);
+			}
+			return Result;
+		}
+		virtual uint32 GetMemoryFootprint(void) const override { return(sizeof(*this) + GetAllocatedSize()); }
+		uint32 GetAllocatedSize(void) const { return(FPrimitiveSceneProxy::GetAllocatedSize()); }
+
+	private:
+		const FVector	BoxExtents;
+	};
+
+	return new FWidgetBoxProxy(this);
+#else
 	return nullptr;
+#endif
 }
 
 class FVRStereoWidgetComponentInstanceData : public FActorComponentInstanceData

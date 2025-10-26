@@ -12,6 +12,9 @@
 #include "Weapon/TVRGunBase.h"
 #include "Weapon/Attachments/TVRWeaponAttachment.h"
 #include "Weapon/Component/TVRAttachmentPoint.h"
+// #include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
+
 
 #define LOCTEXT_NAMESPACE "TVRGunDetails"
 
@@ -22,8 +25,11 @@ FTVRGunDetails::FTVRGunDetails()
 
 void FTVRGunDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
-	IDetailCategoryBuilder& Cat = DetailBuilder.EditCategory(TEXT("Weapon Attachments"));
-
+	IDetailCategoryBuilder& Cat = DetailBuilder.EditCategory(
+		TEXT("Weapon Attachments"),
+		FText::GetEmpty(),
+		ECategoryPriority::TypeSpecific);
+	
 	TArray< TWeakObjectPtr< UObject > > Objects;
 	DetailBuilder.GetObjectsBeingCustomized(Objects);
 	TSharedRef<IPropertyHandle> RecompileHelperProp = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ATVRGunBase, bForceRecompile));
@@ -138,7 +144,7 @@ void FTVRGunDetails::AddAttachmentRow(IDetailCategoryBuilder& Cat, UTVRAttachmen
 	[
 		SNew(STextBlock)
 		.Text(FText::FromString(AttachPoint->GetName()))
-		.TextStyle(FEditorStyle::Get(), "SmallText")
+		.TextStyle(FAppStyle::Get(), "SmallText")
 	]			
 	.ValueContent()
 	.MaxDesiredWidth(800.f)
@@ -167,7 +173,7 @@ void FTVRGunDetails::AddAttachmentRow(IDetailCategoryBuilder& Cat, UTVRAttachmen
 						DisplayName = NSLOCTEXT(LOCTEXT_NAMESPACE,"Invalid Pointer","Invalid Pointer");
 					}
 					return SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText")
+						.TextStyle(FAppStyle::Get(), "NormalText")
 						.Margin(2.f)
 						.Text(DisplayName);
 				}
@@ -187,7 +193,7 @@ void FTVRGunDetails::AddAttachmentRow(IDetailCategoryBuilder& Cat, UTVRAttachmen
 			)
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "SmallText")
+				.TextStyle(FAppStyle::Get(), "SmallText")
 				.Text_Lambda(
 					[this, Gun, AttachPointName]()
 					{
@@ -269,7 +275,7 @@ void FTVRGunDetails::AddSubAttachmentRow(IDetailCategoryBuilder& Cat, UTVRAttach
 	[
 		SNew(STextBlock)
 		.Text(FText::FromString(FString(TEXT("-- ")).Append(AttachPoint->GetName())))
-		.TextStyle(FEditorStyle::Get(), "SmallText")
+		.TextStyle(FAppStyle::Get(), "SmallText")
 	]			
 	.ValueContent()
 	.MaxDesiredWidth(800.f)
@@ -298,7 +304,7 @@ void FTVRGunDetails::AddSubAttachmentRow(IDetailCategoryBuilder& Cat, UTVRAttach
 						DisplayName = NSLOCTEXT(LOCTEXT_NAMESPACE,"Invalid Pointer","Invalid Pointer");
 					}
 					return SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText")
+						.TextStyle(FAppStyle::Get(), "NormalText")
 						.Margin(2.f)
 						.Text(DisplayName);
 				}
@@ -324,7 +330,7 @@ void FTVRGunDetails::AddSubAttachmentRow(IDetailCategoryBuilder& Cat, UTVRAttach
 			)
 			[
 				SNew(STextBlock)
-				.TextStyle(FEditorStyle::Get(), "SmallText")
+				.TextStyle(FAppStyle::Get(), "SmallText")
 				.Text_Lambda(
 					[this, Gun, AttachPointName, ParentPointName]()
 					{

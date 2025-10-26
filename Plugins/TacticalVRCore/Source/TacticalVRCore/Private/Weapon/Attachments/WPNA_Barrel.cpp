@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Tammo Beil. All rights reserved.
+// This file is covered by the LICENSE file in the root of this plugin.
 
 
 #include "Weapon/Attachments/WPNA_Barrel.h"
@@ -10,7 +10,10 @@
 #include "Weapon/Component/TVRAttachPoint_Underbarrel.h"
 #include "GripMotionControllerComponent.h"
 #include "Grippables/HandSocketComponent.h"
+#include "Components/SplineComponent.h"
 #include "Weapon/Attachments/WPNA_Sight.h"
+
+
 
 class UTVRCoreGameplaySettings;
 

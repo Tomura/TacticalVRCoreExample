@@ -4,18 +4,24 @@
 
 #include "TacticalCollisionProfiles.h"
 #include "Components/ArrowComponent.h"
+#include "Components/AudioComponent.h"
 #include "Weapon/TVRCartridge.h"
+#include "Weapon/TVRGunBase.h"
 #include "Weapon/TVRSpentCartridge.h"
-#include "Weapon/Component/TVRGunFireComponent.h"
+#include "Weapon/Component/TVRMagazineCompInterface.h"
 
 UTVREjectionPort::UTVREjectionPort(const FObjectInitializer& OI) : Super(OI)
 {
+	PrimaryComponentTick.bStartWithTickEnabled = false;
+	PrimaryComponentTick.bCanEverTick = false;
+	
 	EjectionDir = FTransform(
 		FRotator(13.f, 62.f, 0.f),
 		FVector(2.f, 4.f, 1.f)
 	);
 	InitBoxExtent(FVector(4.f, 1.5f, 1.5f));
 	SetCollisionProfileName(COLLISION_MAGAZINE_INSERT, false);
+	// SetGenerateOverlapEvents(true);
 	
 	CartridgePoolSize = 20;
 	bAllowChamberload = false;
@@ -27,24 +33,40 @@ UTVREjectionPort::UTVREjectionPort(const FObjectInitializer& OI) : Super(OI)
 void UTVREjectionPort::BeginPlay()
 {
 	Super::BeginPlay();
-
 	PopulateCartridgePool();
+	OnComponentBeginOverlap.AddDynamic(this, &UTVREjectionPort::OnBeginOverlap);
+
+	TArray<UActorComponent*> MagInterfaces = GetOwner()->GetComponentsByInterface(UTVRMagazineInterface::StaticClass());
+	if(MagInterfaces.Num() > 0 )
+	{		
+		LinkMagComp(MagInterfaces[0]);
+	}
+
+	if(EjectSound && EjectAudioComp == nullptr)
+	{
+		EjectAudioComp = NewObject<UAudioComponent>(this, FName(TEXT("EjectAudio")));
+		EjectAudioComp->bAutoActivate = false;
+		EjectAudioComp->SetSound(EjectSound);
+		EjectAudioComp->AttachToComponent(this, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+	}
 }
 
 void UTVREjectionPort::OnComponentDestroyed(bool bDestroyingHierarchy)
 {
 	Super::OnComponentDestroyed(bDestroyingHierarchy);
-	if(EjectionArrow)
-	{
-		EjectionArrow->DestroyComponent();
-	}
 
+	if(IsValid(EjectAudioComp))
+	{
+		EjectAudioComp->DestroyComponent();
+		EjectAudioComp = nullptr;
+	}
+	
 	bDoNotRespawnPool = true;
 	
 	for(uint8 i = 0; i < CartridgePool.Num(); i++)
 	{
-		auto PooledCartridge = CartridgePool[i];
-	    if(PooledCartridge != nullptr && PooledCartridge->IsValidLowLevel() && !PooledCartridge->IsPendingKill()) {
+		auto PooledCartridge = GetValid(CartridgePool[i]);
+	    if(PooledCartridge) {
 		     PooledCartridge->Destroy();
 	    }
 		CartridgePool[i] = nullptr; // null the pointer in the pool, we don't care that much, as we will empty it later.
@@ -52,56 +74,22 @@ void UTVREjectionPort::OnComponentDestroyed(bool bDestroyingHierarchy)
 	CartridgePool.Empty();
 }
 
-#if WITH_EDITOR
 
-void UTVREjectionPort::OnRegister()
+void UTVREjectionPort::OnBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor,
+	UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
 {
-#if WITH_EDITORONLY_DATA
-	if(EjectionArrow == nullptr && GetOwner())
+	if(OtherActor == nullptr)
 	{
-		EjectionArrow = NewObject<UArrowComponent>(GetOwner(), NAME_None, RF_Transactional | RF_TextExportTransient);
-		if(EjectionArrow)
+		return;
+	}
+	if(const auto Cartridge = Cast<ATVRCartridge>(OtherActor))
+	{
+		if(Cartridge->VRGripInterfaceSettings.bIsHeld)
 		{
-			EjectionArrow->SetupAttachment(this);
-			EjectionArrow->SetHiddenInGame(true);
-			EjectionArrow->RegisterComponentWithWorld(GetWorld());
-			EjectionArrow->ArrowSize = 0.2f;
-			EjectionArrow->SetArrowColor(FLinearColor::Red);
-			EjectionArrow->SetRelativeTransform(EjectionDir);
+			TryLoadChamber(Cartridge);
 		}
-	} 
-#endif
-	
-	Super::OnRegister();
-}
-
-void UTVREjectionPort::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
-{
-	if (EjectionArrow && PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UTVREjectionPort, EjectionDir))
-	{
-		EjectionArrow->SetRelativeTransform(EjectionDir);
 	}
-	
-	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
-
-void UTVREjectionPort::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent)
-{
-	if (EjectionArrow && PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UTVREjectionPort, EjectionDir))
-	{
-		EjectionArrow->SetRelativeTransform(EjectionDir);
-	}
-	
-	Super::PostEditChangeChainProperty(PropertyChangedEvent);
-}
-
-void UTVREjectionPort::PostEditUndo()
-{
-	Super::PostEditUndo();
-}
-
-#endif
-
 
 void UTVREjectionPort::PopulateCartridgePool()
 {
@@ -142,7 +130,7 @@ FTransform UTVREjectionPort::GetEjectionDir() const
 
 ATVRCartridge* UTVREjectionPort::SpawnEjectedCartridge(TSubclassOf<ATVRCartridge> CartridgeClass, bool bSpent)
 {
-	if(CartridgeClass && !GetOwner()->IsPendingKill())
+	if(CartridgeClass && IsValid(GetOwner()))
 	{
 		const FTransform EjectionTransform = GetEjectionDir();
 		ATVRCartridge* NewCartridge = nullptr;
@@ -182,6 +170,14 @@ ATVRCartridge* UTVREjectionPort::SpawnEjectedCartridge(TSubclassOf<ATVRCartridge
 			NewCartridge->GetStaticMeshComponent()->SetPhysicsLinearVelocity(EjectDir * EjectImpulse, false);
 			NewCartridge->GetStaticMeshComponent()->SetPhysicsAngularVelocityInDegrees(
 				EjectionTransform.TransformVector(FVector::UpVector) * EjectRotImpulse, false);
+
+			if(EjectAudioComp)
+			{
+				EjectAudioComp->Stop();
+				EjectAudioComp->SetBoolParameter(FName(TEXT("Insert")), false);
+				EjectAudioComp->Play();
+			}
+			
 			return NewCartridge;
 		}
 	}
@@ -201,6 +197,12 @@ void UTVREjectionPort::OnPooledCartridgeDestroyed(AActor* PooledCatridge)
 	}
 }
 
+void UTVREjectionPort::LinkMagComp(UObject* MagInterface)
+{
+	AllowedCatridges.Empty();
+	ITVRMagazineInterface::Execute_GetAllowedCatridges(MagInterface, AllowedCatridges);
+}
+
 void UTVREjectionPort::TryLoadChamber(ATVRCartridge* Cartridge)
 {
 	if(!bAllowChamberload)
@@ -210,14 +212,20 @@ void UTVREjectionPort::TryLoadChamber(ATVRCartridge* Cartridge)
 
 	if(GetOwner())
 	{
-		TArray<UTVRGunFireComponent*> FiringComps;
-		GetOwner()->GetComponents<UTVRGunFireComponent>(FiringComps);
-		if(FiringComps.Num() > 0)
+		if(const auto Gun = Cast<ATVRGunBase>(GetOwner()))
 		{
-			const auto FiringComp = FiringComps[0];
-			if(FiringComp && FiringComp->GetLoadedCartridge() == nullptr)
+			if(Gun->IsBoltOpen() && AllowedCatridges.Find(Cartridge->GetClass()) != INDEX_NONE)
 			{
-				// we still need to check if the cartridge is allowed
+				if(Gun->TryChamberNewRound(Cartridge->GetClass()))
+				{
+					if(EjectAudioComp)
+					{
+						EjectAudioComp->Stop();
+						EjectAudioComp->SetBoolParameter(FName(TEXT("Insert")), true);
+						EjectAudioComp->Play();
+					}
+					Cartridge->Destroy();
+				}
 			}
 		}
 	}

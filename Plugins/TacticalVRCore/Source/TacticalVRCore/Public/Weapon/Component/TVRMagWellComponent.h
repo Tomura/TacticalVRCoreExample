@@ -23,8 +23,7 @@ UCLASS(Blueprintable, meta = (BlueprintSpawnableComponent), ClassGroup = (Tactic
 class TACTICALVRCORE_API UTVRMagWellComponent : public UTVRMagazineCompInterface
 {
 	GENERATED_BODY()
-
-
+	
 	UPROPERTY()
 	class UAudioComponent* MagAudioComp;
 	
@@ -43,33 +42,33 @@ public:
 	 * Changes the collision profile of all relevant meshes (anything that isn't a helper but a physical collider)
 	 * @param NewProfile Name of the new collision profile
 	 */
-	virtual void SetMagazineCollisionProfile(FName NewProfile) override;
+	virtual void SetMagazineCollisionProfile_Implementation(FName NewProfile) override;
 
 	/**
 	 * @returns True if the conditions are met from the magazine side for the bolt to be locked.
 	 */
-	virtual bool CanBoltLock() const override;
+	virtual bool CanBoltLock_Implementation() const override;
 	
 	/**
 	 * @returns True if the attached magazine is empty.
 	 */
-	virtual bool IsEmpty() const override;
+	virtual bool IsEmpty_Implementation() const override;
 
 	/**
 	 * @returns number between 0 and 1, where 1 means magazine is fully inserted
 	 */
-	virtual float GetAmmoInsertProgress() override;
+	virtual float GetAmmoInsertProgress_Implementation() const override;
 
-	virtual void OnMagReleasePressed(bool bAlternatePress = false) override;
-	virtual void OnMagReleaseReleased(bool bAlternatePress = false) override;
+	virtual void OnMagReleasePressed_Implementation(bool bAlternatePress = false) override;
+	virtual void OnMagReleaseReleased_Implementation(bool bAlternatePress = false) override;
 
-	virtual void OnOwnerGripReleased(ATVRCharacter* OwningChar, class UGripMotionControllerComponent* ReleasingHand) override;
+	virtual void OnOwnerGripReleased_Implementation(ATVRCharacter* OwningChar, class UGripMotionControllerComponent* ReleasingHand) override;
 	/**
 	 * @returns True if Ammo can be fed from the magazine to the weapon
 	 */
-	virtual bool CanFeedAmmo() const override;
+	virtual bool CanFeedAmmo_Implementation() const override;
 
-	virtual TSubclassOf<class ATVRCartridge> TryFeedAmmo() override;
+	virtual TSubclassOf<class ATVRCartridge> TryFeedAmmo_Implementation() override;
 	
 	// ================================================
 	// End MagazineComponentInterface
@@ -85,30 +84,22 @@ public:
      * @param SweepResult Sweep result
      */
 	virtual void OnBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult & SweepResult) override;
-
-    /**
-     * Transforms the transform of a spline point into a transform of a magazine attach origin on this spline
-     * @param InTransform Transform along the spline that needs to be transformed
-     * @returns Transform to attach a magazine to.
-     */
-	FTransform TransformSplineToMagazineCoordinates(const FTransform& InTransform) const;
-
+	
     /**
      * @returns a pointer to the magazine spline
      */
 	USplineComponent* GetMagSpline() const;
 	USplineComponent* FindMagSpline() const;
-
-    /**
-     * Repositions the magazine to the desired position
-     */
-	virtual void RepositionMagazine();
+	
 
     /**
      * Handles the Mag Drop Logic during Component Tick. DO NOT CALL OUTSIDE OF TickComponent()
      * @param DeltaSeconds Delta Time between the last Frame in seconds
      */
 	virtual void HandleMagDrop(float DeltaSeconds);
+
+	virtual void HandleMagInsert(float DeltaSeconds);
+	virtual void HandleMagFall(float DeltaSeconds);
 
     /**
      * Event Called when the mag is fully ejected and not constrained by the Magwell anymore.
@@ -165,7 +156,7 @@ public:
 	virtual class ATVRMagazine* GetCurrentMagazine() const;
 
 
-    virtual bool IsMagReleasePressed() const override;
+    virtual bool IsMagReleasePressed_Implementation() const override;
 
 	virtual void GetSplineTransform(const FVector& inLoc, FTransform& outTransform) const;
 	virtual void GetSplineTransformAtTime(float inProgress, FTransform& outTransform) const;
@@ -189,6 +180,8 @@ public:
 	virtual class ATVRMagazine* SpawnMagazineAttached(TSubclassOf<ATVRMagazine> MagazineClass = nullptr);
 
 	TSubclassOf<ATVRMagazine> DefaultMagazineClass;
+
+	virtual void GetAllowedCatridges_Implementation(TArray<TSubclassOf<ATVRCartridge>>& OutCartridges) const override;
 	
 protected:
 	virtual void StartInsertMagazine(class ATVRMagazine* MagToInsert);
@@ -218,6 +211,9 @@ protected:
 
     /** Velocity Vector of Attached Magazine */
     FVector MagVelocity;
+	
+	UPROPERTY(Category = "Magazine", BlueprintReadOnly, EditDefaultsOnly)
+	float MagEjectAcceleration;
 
 	UPROPERTY(Category = "Magazine", BlueprintReadOnly, EditDefaultsOnly)
 	bool bUseCurve;

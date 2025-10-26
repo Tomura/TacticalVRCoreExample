@@ -1,5 +1,7 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 #include "AnimNode_ApplyOpenXRHandPose.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_ApplyOpenXRHandPose)
+
 //#include "EngineMinimal.h"
 //#include "Engine/Engine.h"
 //#include "CoreMinimal.h"
@@ -49,21 +51,35 @@ void FAnimNode_ApplyOpenXRHandPose::InitializeBoneReferences(const FBoneContaine
 	if (!OwningAsset)
 		return;
 
-	if (!MappedBonePairs.bInitialized || OwningAsset->GetFName() != MappedBonePairs.LastInitializedName)
+	USkeleton* AssetSkeleton = RequiredBones.GetSkeletonAsset();
+
+	if (!AssetSkeleton)
+		return;
+
+	if (!MappedBonePairs.bInitialized || OwningAsset->GetFName() != MappedBonePairs.LastInitializedName || SkeletonType != MappedBonePairs.LastInitializedSkeleton)
 	{
+
+		// Trigger a full re-build if our asset changed
+		if (MappedBonePairs.bInitialized && (OwningAsset->GetFName() != MappedBonePairs.LastInitializedName || SkeletonType != MappedBonePairs.LastInitializedSkeleton))
+		{
+			MappedBonePairs.ClearMapping();
+		}
+
 		MappedBonePairs.LastInitializedName = OwningAsset->GetFName();
+		MappedBonePairs.LastInitializedSkeleton = SkeletonType;
 		MappedBonePairs.bInitialized = false;
 		
-		USkeleton* AssetSkeleton = RequiredBones.GetSkeletonAsset();
 		if (AssetSkeleton)
 		{
 			// If our bone pairs are empty, then setup our sane defaults
-			if(!MappedBonePairs.BonePairs.Num())
-				MappedBonePairs.ConstructDefaultMappings(SkeletonType, bSkipRootBone);
+			if (!MappedBonePairs.BonePairs.Num())
+			{
 
-			FBPOpenXRSkeletalPair WristPair;
-			FBPOpenXRSkeletalPair IndexPair;
-			FBPOpenXRSkeletalPair PinkyPair;
+				MappedBonePairs.ConstructDefaultMappings(SkeletonType, bSkipRootBone);
+			}
+
+			// Construct a reverse map of our joints
+			MappedBonePairs.ConstructReverseMapping();
 
 			TArray<FTransform> RefBones = AssetSkeleton->GetReferenceSkeleton().GetRefBonePose();
 			TArray<FMeshBoneInfo> RefBonesInfo = AssetSkeleton->GetReferenceSkeleton().GetRefBoneInfo();
@@ -82,72 +98,94 @@ void FAnimNode_ApplyOpenXRHandPose::InitializeBoneReferences(const FBoneContaine
 				{
 					// Get our parent bones index
 					BonePair.ParentReference = RequiredBones.GetParentBoneIndex(BonePair.ReferenceToConstruct.CachedCompactPoseIndex);
-
-					/*FTransform WristPose = GetRefBoneInCS(RefBones, RefBonesInfo, BonePair.ReferenceToConstruct.BoneIndex);
-
-					FVector WristForward = WristPose.GetRotation().GetForwardVector();
-					FVector WristUpward = WristPose.GetRotation().GetForwardVector();
-					FQuat ForwardFixup = FQuat::FindBetweenNormals(FVector::ForwardVector, WristForward);
-					FQuat UpFixup = FQuat::FindBetweenNormals(ForwardFixup.RotateVector(FVector::UpVector), WristUpward);
-
-					FQuat rotFix = UpFixup * ForwardFixup;
-					rotFix.Normalize();
-					//MappedBonePairs.AdjustmentQuat = rotFix;
-					BonePair.RetargetRot = rotFix;*/
-				}
-				
-				if (BonePair.OpenXRBone == EXRHandJointType::OXR_HAND_JOINT_WRIST_EXT)
-				{
-					WristPair = BonePair;
-				}
-				else if (BonePair.OpenXRBone == EXRHandJointType::OXR_HAND_JOINT_INDEX_PROXIMAL_EXT)
-				{
-					IndexPair = BonePair;
-				}
-				else if (BonePair.OpenXRBone == EXRHandJointType::OXR_HAND_JOINT_LITTLE_PROXIMAL_EXT)
-				{
-					PinkyPair = BonePair;
 				}
 			}
 
 			MappedBonePairs.bInitialized = true;
 
-			if (WristPair.ReferenceToConstruct.HasValidSetup() && IndexPair.ReferenceToConstruct.HasValidSetup() && PinkyPair.ReferenceToConstruct.HasValidSetup())
+			if (SkeletonType == EVROpenXRSkeletonType::OXR_SkeletonType_OpenVRDefault_Left || SkeletonType == EVROpenXRSkeletonType::OXR_SkeletonType_OpenVRDefault_Right)
 			{
-				//TArray<FTransform> RefBones = AssetSkeleton->GetReferenceSkeleton().GetRefBonePose();
-				//TArray<FMeshBoneInfo> RefBonesInfo = AssetSkeleton->GetReferenceSkeleton().GetRefBoneInfo();
-
-				FTransform WristPose = GetRefBoneInCS(RefBones, RefBonesInfo, WristPair.ReferenceToConstruct.BoneIndex);
-				FTransform MiddleFingerPose = GetRefBoneInCS(RefBones, RefBonesInfo, PinkyPair.ReferenceToConstruct.BoneIndex);
-
-				FVector BoneForwardVector = MiddleFingerPose.GetTranslation() - WristPose.GetTranslation();
-				SetVectorToMaxElement(BoneForwardVector);
-				BoneForwardVector.Normalize();
-
-				FTransform IndexFingerPose = GetRefBoneInCS(RefBones, RefBonesInfo, IndexPair.ReferenceToConstruct.BoneIndex);
-				FTransform PinkyFingerPose = GetRefBoneInCS(RefBones, RefBonesInfo, PinkyPair.ReferenceToConstruct.BoneIndex);
-				FVector BoneUpVector = IndexFingerPose.GetTranslation() - PinkyFingerPose.GetTranslation();
-				SetVectorToMaxElement(BoneUpVector);
-				BoneUpVector.Normalize();
-
-				FVector BoneRightVector = FVector::CrossProduct(BoneUpVector, BoneForwardVector);
-				BoneRightVector.Normalize();
-
-				FQuat ForwardAdjustment = FQuat::FindBetweenNormals(FVector::ForwardVector, BoneForwardVector);
-
-				FVector NewRightVector = ForwardAdjustment * FVector::RightVector;
-				NewRightVector.Normalize();
-
-				FQuat TwistAdjustment = FQuat::FindBetweenNormals(NewRightVector, BoneRightVector);
-				MappedBonePairs.AdjustmentQuat = TwistAdjustment * ForwardAdjustment;
-				MappedBonePairs.AdjustmentQuat.Normalize();
+				// We hard code this for now because I don't like their wrist being a different transform
+				MappedBonePairs.AdjustmentQuat = FRotator(0.f, 90.f, 180.f).Quaternion(); // Current one is incorrect without wrist
+				// Maybe do it in relative space?
+			}
+			else
+			{
+				CalculateSkeletalAdjustment(AssetSkeleton);
 			}
 			
 		}
 	}
 }
 
-void FAnimNode_ApplyOpenXRHandPose::ConvertHandTransformsSpace(TArray<FTransform>& OutTransforms, TArray<FTransform>& WorldTransforms, FTransform AddTrans, bool bMirrorLeftRight, bool bMergeMissingUE4Bones)
+void FAnimNode_ApplyOpenXRHandPose::CalculateSkeletalAdjustment(USkeleton* AssetSkeleton)
+{
+
+	TArray<FTransform> RefBones = AssetSkeleton->GetReferenceSkeleton().GetRefBonePose();
+	TArray<FMeshBoneInfo> RefBonesInfo = AssetSkeleton->GetReferenceSkeleton().GetRefBoneInfo();
+
+	if (!MappedBonePairs.bInitialized || MappedBonePairs.BonePairs.Num() < 4 || !RefBones.Num())
+	{
+		UE_LOG(LogTemp, Error, TEXT("Empty or incorrect mapping or skeleton data when calculating skeletal adjustment!"));
+		return;
+	}
+
+	FBPOpenXRSkeletalPair KnuckleIndexPair = MappedBonePairs.BonePairs[MappedBonePairs.ReverseBonePairMap[(int8)EXRHandJointType::OXR_HAND_JOINT_INDEX_PROXIMAL_EXT]];
+	FBPOpenXRSkeletalPair KnuckleMiddlePair = MappedBonePairs.BonePairs[MappedBonePairs.ReverseBonePairMap[(int8)EXRHandJointType::OXR_HAND_JOINT_MIDDLE_PROXIMAL_EXT]];
+	FBPOpenXRSkeletalPair KnuckleRingPair = MappedBonePairs.BonePairs[MappedBonePairs.ReverseBonePairMap[(int8)EXRHandJointType::OXR_HAND_JOINT_RING_PROXIMAL_EXT]];
+	FBPOpenXRSkeletalPair KnucklePinkyPair = MappedBonePairs.BonePairs[MappedBonePairs.ReverseBonePairMap[(int8)EXRHandJointType::OXR_HAND_JOINT_LITTLE_PROXIMAL_EXT]];
+
+	FBPOpenXRSkeletalPair WristPair = MappedBonePairs.BonePairs[MappedBonePairs.ReverseBonePairMap[(int8)EXRHandJointType::OXR_HAND_JOINT_WRIST_EXT]];
+
+	FVector KnuckleAverage = GetRefBoneInCS(RefBones, RefBonesInfo, KnuckleIndexPair.ReferenceToConstruct.BoneIndex).GetTranslation();
+	KnuckleAverage += GetRefBoneInCS(RefBones, RefBonesInfo, KnuckleMiddlePair.ReferenceToConstruct.BoneIndex).GetTranslation();
+	KnuckleAverage += GetRefBoneInCS(RefBones, RefBonesInfo, KnuckleRingPair.ReferenceToConstruct.BoneIndex).GetTranslation();
+	KnuckleAverage += GetRefBoneInCS(RefBones, RefBonesInfo, KnucklePinkyPair.ReferenceToConstruct.BoneIndex).GetTranslation();
+
+	// Get our average across the knuckles
+	KnuckleAverage /= 4.f;
+
+	// Obtain the UE4 wrist Side & Forward directions from first animation frame and place in cache 
+	FTransform WristTransform_UE = GetRefBoneInCS(RefBones, RefBonesInfo, WristPair.ReferenceToConstruct.BoneIndex);
+	FVector ToKnuckleAverage_UE = KnuckleAverage - WristTransform_UE.GetTranslation();
+	ToKnuckleAverage_UE.Normalize();
+
+
+	WristForwardLS_UE = WristTransform_UE.GetRotation().UnrotateVector(ToKnuckleAverage_UE);
+	SetVectorToMaxElement(WristForwardLS_UE);
+	WristSideDirectionLS = FVector::CrossProduct(WristForwardLS_UE, FVector::RightVector);
+	SetVectorToMaxElement(WristSideDirectionLS);
+
+	CalculateOpenXRAdjustment();
+}
+
+void FAnimNode_ApplyOpenXRHandPose::CalculateOpenXRAdjustment()
+{
+	// Base implementation is like valves
+
+	// Forward direction
+	static FVector OpenXRForwardDirection = FVector(1.0f, 0.f, 0.f);
+
+	// Side direction
+	// Do I need to flip this for left hand?
+	static FVector OpenXRSideDirection = FVector(0.f, 1.f, 0.f); 
+
+	// Align forward vectors, openXR once in engine is X+ forward
+	FQuat AlignmentRot = FQuat::FindBetweenNormals(WristForwardLS_UE, OpenXRForwardDirection);
+
+	// Rotate about the aligned forward direction to make the side directions align
+	FVector WristSideDirectionMS_UE = AlignmentRot * WristSideDirectionLS;
+
+	// Rotate around, should the Side direction flip for openXR if its the left hand?
+	FQuat TwistRotation = CalcRotationAboutAxis(WristSideDirectionMS_UE, OpenXRSideDirection, OpenXRForwardDirection);
+
+	FRotator Difference = (TwistRotation * AlignmentRot).Rotator();
+
+	MappedBonePairs.AdjustmentQuat = (TwistRotation * AlignmentRot).GetNormalized();
+
+}
+
+void FAnimNode_ApplyOpenXRHandPose::ConvertHandTransformsSpace(TArray<FTransform>& OutTransforms, const TArray<FTransform>& WorldTransforms, FTransform AddTrans, bool bMirrorLeftRight, bool bMergeMissingUE4Bones)
 {
 	// Fail if the count is too low
 	if (WorldTransforms.Num() < EHandKeypointCount)
@@ -158,6 +196,11 @@ void FAnimNode_ApplyOpenXRHandPose::ConvertHandTransformsSpace(TArray<FTransform
 		OutTransforms.Empty(WorldTransforms.Num());
 		OutTransforms.AddUninitialized(WorldTransforms.Num());
 	}
+
+	TArray<FTransform> TempWorldTransforms = WorldTransforms;
+
+	// Ensure add trans is normalized
+	AddTrans.NormalizeRotation();
 
 	// Bone/Parent map
 	int32 BoneParents[26] =
@@ -195,24 +238,44 @@ void FAnimNode_ApplyOpenXRHandPose::ConvertHandTransformsSpace(TArray<FTransform
 		24,	// LittleTip -> LittleDistal
 	};
 
+	bool bUseAutoCalculatedRetarget = AddTrans.Equals(FTransform::Identity);
+
 	// Convert transforms to parent space
 	// The hand tracking transforms are in world space.
 
 	for (int32 Index = 0; Index < EHandKeypointCount; ++Index)
 	{
-		WorldTransforms[Index].NormalizeRotation();
+		if (TempWorldTransforms[Index].ContainsNaN() || TempWorldTransforms[Index].Equals(FTransform::Identity))
+		{
+			OutTransforms[Index] = FTransform::Identity;
+			//continue;
+		}
+
+		// Ensure normalization
+		TempWorldTransforms[Index].NormalizeRotation();
 
 		if (bMirrorLeftRight)
 		{
-			WorldTransforms[Index].Mirror(EAxis::Y, EAxis::Y);
+			TempWorldTransforms[Index].Mirror(EAxis::Y, EAxis::Y);
 		}
 
-		WorldTransforms[Index].ConcatenateRotation(AddTrans.GetRotation());
+		if (bUseAutoCalculatedRetarget)
+		{
+			TempWorldTransforms[Index].ConcatenateRotation(MappedBonePairs.AdjustmentQuat);
+			//WorldTransforms[Index].ConcatenateRotation(MappedBonePairs.BonePairs[0].RetargetRot);
+		}
+		else
+		{
+			TempWorldTransforms[Index].ConcatenateRotation(AddTrans.GetRotation());
+		}
 	}
 
+	// Make this into a single loop, their structure always has children after parent
 	for (int32 Index = 0; Index < EHandKeypointCount; ++Index)
 	{
-		FTransform& BoneTransform = WorldTransforms[Index];
+		FTransform& BoneTransform = TempWorldTransforms[Index];
+		//BoneTransform.NormalizeRotation();
+
 		int32 ParentIndex = BoneParents[Index];
 		int32 ParentParent = -1;
 
@@ -232,15 +295,20 @@ void FAnimNode_ApplyOpenXRHandPose::ConvertHandTransformsSpace(TArray<FTransform
 		}
 		else
 		{
+			FTransform ParentTransform = FTransform::Identity;
+
 			// Merging missing metacarpal bone into the transform
 			if (bMergeMissingUE4Bones && ParentParent == 1) // Wrist
 			{
-				OutTransforms[Index] = BoneTransform.GetRelativeTransform(WorldTransforms[ParentParent]);
+				ParentTransform = TempWorldTransforms[ParentParent];
 			}
 			else
 			{
-				OutTransforms[Index] = BoneTransform.GetRelativeTransform(WorldTransforms[ParentIndex]);
+				ParentTransform = TempWorldTransforms[ParentIndex];
 			}
+
+			//ParentTransform.NormalizeRotation();
+			OutTransforms[Index] = BoneTransform.GetRelativeTransform(ParentTransform);
 		}
 	}
 }
@@ -249,6 +317,20 @@ void FAnimNode_ApplyOpenXRHandPose::EvaluateSkeletalControl_AnyThread(FComponent
 {
 	if (!MappedBonePairs.bInitialized)
 		return;
+
+
+	const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
+
+	UObject* OwningAsset = BoneContainer.GetAsset();
+	if (!OwningAsset)
+		return;
+
+	// Trigger a full re-build if our asset or target skeleton changed, do it up here before finding the correct hand
+	if ((OwningAsset->GetFName() != MappedBonePairs.LastInitializedName || SkeletonType != MappedBonePairs.LastInitializedSkeleton))
+	{
+		InitializeBoneReferences(BoneContainer);
+	}
+
 
 	/*const */FBPOpenXRActionSkeletalData *StoredActionInfoPtr = nullptr;
 	if (bIsOpenInputAnimationInstance)
@@ -275,16 +357,20 @@ void FAnimNode_ApplyOpenXRHandPose::EvaluateSkeletalControl_AnyThread(FComponent
 	}
 
 	// If we have an empty hand pose but have a passed in custom one then use that
-	if ((StoredActionInfoPtr == nullptr || !StoredActionInfoPtr->SkeletalTransforms.Num()) && OptionalStoredActionInfo.SkeletalTransforms.Num())
+	if (StoredActionInfoPtr == nullptr || !StoredActionInfoPtr->SkeletalTransforms.Num())
 	{
 		StoredActionInfoPtr = &OptionalStoredActionInfo;
+	}
+
+	if (!StoredActionInfoPtr->bHasValidData)
+	{
+		return;
 	}
 
 	//MappedBonePairs.AdjustmentQuat = WristAdjustment;
 
 	// Currently not blending correctly
 	const float BlendWeight = FMath::Clamp<float>(ActualAlpha, 0.f, 1.f);
-	const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
 	uint8 BoneTransIndex = 0;
 	uint8 NumBones = StoredActionInfoPtr ? StoredActionInfoPtr->SkeletalTransforms.Num() : 0;
 
@@ -293,6 +379,9 @@ void FAnimNode_ApplyOpenXRHandPose::EvaluateSkeletalControl_AnyThread(FComponent
 		// Early out, we don't have a valid data to work with
 		return;
 	}
+
+
+
 
 	FTransform trans = FTransform::Identity;
 	OutBoneTransforms.Reserve(MappedBonePairs.BonePairs.Num());
@@ -313,6 +402,9 @@ void FAnimNode_ApplyOpenXRHandPose::EvaluateSkeletalControl_AnyThread(FComponent
 		BoneTransIndex = (int8)BonePair.OpenXRBone;
 		ParentTrans = FTransform::Identity;
 
+		if (bSkipRootBone && BonePair.OpenXRBone == EXRHandJointType::OXR_HAND_JOINT_WRIST_EXT)
+			continue;
+
 		if (BoneTransIndex >= NumBones || BonePair.ReferenceToConstruct.CachedCompactPoseIndex == INDEX_NONE)
 			continue;		
 
@@ -331,6 +423,7 @@ void FAnimNode_ApplyOpenXRHandPose::EvaluateSkeletalControl_AnyThread(FComponent
 
 		EXRHandJointType CurrentBone = (EXRHandJointType)BoneTransIndex;
 		TempTrans = (HandTransforms[BoneTransIndex]);
+		//TempTrans.ConcatenateRotation(BonePair.RetargetRot);
 
 		/*if (StoredActionInfoPtr->bMirrorHand)
 		{

@@ -1,6 +1,11 @@
 // Copyright 1998-2016 Epic Games, Inc. All Rights Reserved.
 
 #include "Grippables/GrippableCapsuleComponent.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GrippableCapsuleComponent)
+
+#include "GripMotionControllerComponent.h"
+#include "VRExpansionFunctionLibrary.h"
+#include "GripScripts/VRGripScriptBase.h"
 #include "Net/UnrealNetwork.h"
 
   //=============================================================================
@@ -28,6 +33,10 @@ UGrippableCapsuleComponent::UGrippableCapsuleComponent(const FObjectInitializer&
 
 	bRepGripSettingsAndGameplayTags = true;
 	bReplicateGripScripts = false;
+
+	// #TODO we can register them maybe in the future
+	// Don't use the replicated list, use our custom replication instead
+	bReplicateUsingRegisteredSubObjectList = false;
 }
 
 void UGrippableCapsuleComponent::GetLifetimeReplicatedProps(TArray< class FLifetimeProperty > & OutLifetimeProps) const
@@ -47,24 +56,24 @@ void UGrippableCapsuleComponent::PreReplication(IRepChangedPropertyTracker & Cha
 	Super::PreReplication(ChangedPropertyTracker);
 
 	// Don't replicate if set to not do it
-	DOREPLIFETIME_ACTIVE_OVERRIDE(UGrippableCapsuleComponent, VRGripInterfaceSettings, bRepGripSettingsAndGameplayTags);
-	DOREPLIFETIME_ACTIVE_OVERRIDE(UGrippableCapsuleComponent, GameplayTags, bRepGripSettingsAndGameplayTags);
-	DOREPLIFETIME_ACTIVE_OVERRIDE(UGrippableCapsuleComponent, GripLogicScripts, bReplicateGripScripts);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(UGrippableCapsuleComponent, VRGripInterfaceSettings, bRepGripSettingsAndGameplayTags);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(UGrippableCapsuleComponent, GameplayTags, bRepGripSettingsAndGameplayTags);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(UGrippableCapsuleComponent, GripLogicScripts, bReplicateGripScripts);
 
-	DOREPLIFETIME_ACTIVE_OVERRIDE_PRIVATE_PROPERTY(USceneComponent, RelativeLocation, bReplicateMovement);
-	DOREPLIFETIME_ACTIVE_OVERRIDE_PRIVATE_PROPERTY(USceneComponent, RelativeRotation, bReplicateMovement);
-	DOREPLIFETIME_ACTIVE_OVERRIDE_PRIVATE_PROPERTY(USceneComponent, RelativeScale3D, bReplicateMovement);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(USceneComponent, RelativeLocation, bReplicateMovement);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(USceneComponent, RelativeRotation, bReplicateMovement);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(USceneComponent, RelativeScale3D, bReplicateMovement);
 }
 
 bool UGrippableCapsuleComponent::ReplicateSubobjects(UActorChannel* Channel, class FOutBunch *Bunch, FReplicationFlags *RepFlags)
 {
 	bool WroteSomething = Super::ReplicateSubobjects(Channel, Bunch, RepFlags);
 
-	if (bReplicateGripScripts)
+	if (bReplicateGripScripts && !IsUsingRegisteredSubObjectList())
 	{
 		for (UVRGripScriptBase* Script : GripLogicScripts)
 		{
-			if (Script && !Script->IsPendingKill())
+			if (Script && IsValid(Script))
 			{
 				WroteSomething |= Channel->ReplicateSubobject(Script, *Bunch, *RepFlags);
 			}
@@ -266,7 +275,7 @@ void UGrippableCapsuleComponent::PreDestroyFromReplication()
 		if (UObject *SubObject = GripLogicScripts[i])
 		{
 			SubObject->PreDestroyFromReplication();
-			SubObject->MarkPendingKill();
+			SubObject->MarkAsGarbage();
 		}
 	}
 
@@ -306,7 +315,7 @@ void UGrippableCapsuleComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 	{
 		if (UObject *SubObject = GripLogicScripts[i])
 		{
-			SubObject->MarkPendingKill();
+			SubObject->MarkAsGarbage();
 		}
 	}
 

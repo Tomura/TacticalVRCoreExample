@@ -8,6 +8,7 @@
 #include "Kismet/KismetMathLibrary.h"
 #include "Libraries/TVRFunctionLibrary.h"
 #include "Player/TVRCharacter.h"
+#include "Weapon/TVRCartridge.h"
 #include "Sound/SoundCue.h"
 
 #define MAG_AUDIO_StartInsert 0
@@ -32,6 +33,7 @@ UTVRMagWellComponent::UTVRMagWellComponent(const FObjectInitializer& OI) : Super
 	bNeedsToBeReleasedByHand = false;
 	bHasMagRelease = false;
 	DefaultMagazineClass = nullptr;
+	MagEjectAcceleration = 0.f;
 }
 
 void UTVRMagWellComponent::BeginPlay()
@@ -56,7 +58,7 @@ void UTVRMagWellComponent::BeginPlay()
 
 void UTVRMagWellComponent::BeginDestroy()
 {
-	if(MagAudioComp && !MagAudioComp->IsPendingKill())
+	if(IsValid(MagAudioComp))
 	{
 		MagAudioComp->DestroyComponent();
 	}
@@ -69,21 +71,21 @@ void UTVRMagWellComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     HandleMagDrop(DeltaTime);
 }
 
-void UTVRMagWellComponent::SetMagazineCollisionProfile(FName NewProfile)
+void UTVRMagWellComponent::SetMagazineCollisionProfile_Implementation(FName NewProfile)
 {
-	Super::SetMagazineCollisionProfile(NewProfile);
+	Super::SetMagazineCollisionProfile_Implementation(NewProfile);
 	if(ATVRMagazine* Mag = GetCurrentMagazine())
 	{
 		Mag->SetCollisionProfile(NewProfile);
 	}
 }
 
-bool UTVRMagWellComponent::CanBoltLock() const
+bool UTVRMagWellComponent::CanBoltLock_Implementation() const
 {
 	return HasFullyInsertedMagazine() && GetCurrentMagazine()->IsEmpty();
 }
 
-bool UTVRMagWellComponent::IsEmpty() const
+bool UTVRMagWellComponent::IsEmpty_Implementation() const
 {
 	if(HasFullyInsertedMagazine())
 	{
@@ -92,7 +94,7 @@ bool UTVRMagWellComponent::IsEmpty() const
 	return true; // really? todo: check behavior without mag
 }
 
-float UTVRMagWellComponent::GetAmmoInsertProgress()
+float UTVRMagWellComponent::GetAmmoInsertProgress_Implementation() const
 {
 	if(const ATVRMagazine* const Mag = GetCurrentMagazine())
 	{
@@ -146,15 +148,6 @@ USplineComponent* UTVRMagWellComponent::FindMagSpline() const
 	return nullptr;
 }
 
-void UTVRMagWellComponent::RepositionMagazine()
-{
-    ATVRGunBase* Gun = GetGunOwner();
-    if(Gun != nullptr && GetMagSpline() != nullptr && HasMagazine())
-    {
-        const FTransform SplineTransform = GetMagSpline()->GetTransformAtTime(0.f, ESplineCoordinateSpace::World, false);
-        CurrentMagazine->SetMagazineOriginToTransform(TransformSplineToMagazineCoordinates(SplineTransform));
-    }
-}
 
 void UTVRMagWellComponent::HandleMagDrop(float DeltaSeconds)
 {
@@ -174,44 +167,11 @@ void UTVRMagWellComponent::HandleMagDrop(float DeltaSeconds)
         {
             if(GetCurrentMagazine()->VRGripInterfaceSettings.bIsHeld)
             {
-            	bWasReleasedByHand = true;
-                MagVelocity = FVector::ZeroVector;
-                UGripMotionControllerComponent* GrippingHand = CurrentMagazine->VRGripInterfaceSettings.HoldingControllers[0].HoldingController;               
-                const FTransform HandTransform = GrippingHand->GetComponentTransform();
-                const FTransform MagSlot = CurrentMagazine->GetGripSlotTransform(GrippingHand);
-                const FTransform MagOrigin = CurrentMagazine->GetAttachOrigin()->GetComponentTransform();
-                const FTransform QueryTransform = MagOrigin * MagSlot.Inverse() * HandTransform;
-                
-                FTransform FoundTransform;
-            	GetSplineTransform(QueryTransform.GetLocation(), FoundTransform);
-                const FTransform NewTransform = TransformSplineToMagazineCoordinates(FoundTransform);
-
-                MagVelocity = (FoundTransform.GetLocation() - MagOrigin.GetLocation())/DeltaSeconds;
-                CurrentMagazine->SetMagazineOriginToTransform(NewTransform);
-                CurrentMagazine->MagInsertPercentage =
-                    UTVRFunctionLibrary::GetDistanceAlongSplineClosestToWorldLocation(MyMagSpline, NewTransform.GetLocation())/MyMagSpline->GetSplineLength();
+				HandleMagInsert(DeltaSeconds);
             }
             else if(!bNeedsToBeReleasedByHand || bWasReleasedByHand)
             {
-                const float DropAcceleration = GetWorld()->GetGravityZ();
-                MagVelocity = MagVelocity + FVector::UpVector * DropAcceleration * DeltaSeconds;
-                
-                const FVector MagLoc = GetCurrentMagazine()->GetAttachOrigin()->GetComponentLocation();
-                const FVector ExternalVelocity = Gun->GetStaticMeshComponent()->GetPhysicsLinearVelocityAtPoint(GetComponentLocation());
-                const FVector DesiredMagLocInternal = MagLoc + (MagVelocity) * DeltaSeconds;
-                const FVector DesiredMagLoc = DesiredMagLocInternal - ExternalVelocity * DeltaSeconds;
-                
-
-                // const FTransform SplineTransform = MyMagSpline->GetTransformAtDistanceAlongSpline(MagDropDistance, ESplineCoordinateSpace::World, false);
-                FTransform SplineTransform;
-            	GetSplineTransform(DesiredMagLoc, SplineTransform);
-                const FVector SplineInternalLoc = MyMagSpline->FindLocationClosestToWorldLocation(DesiredMagLocInternal, ESplineCoordinateSpace::World);
-                const FTransform NewTransform = TransformSplineToMagazineCoordinates(SplineTransform);
-
-                MagVelocity = (SplineInternalLoc - MagLoc)/DeltaSeconds;                
-                CurrentMagazine->SetMagazineOriginToTransform(NewTransform);
-                CurrentMagazine->MagInsertPercentage =
-                    UTVRFunctionLibrary::GetDistanceAlongSplineClosestToWorldLocation(MyMagSpline, NewTransform.GetLocation())/MyMagSpline->GetSplineLength();
+            	HandleMagFall(DeltaSeconds);
             }
         }
         else if(bEjectMag)
@@ -221,9 +181,62 @@ void UTVRMagWellComponent::HandleMagDrop(float DeltaSeconds)
         else
         {
             OnMagFullyInserted();
-            CurrentMagazine->MagInsertPercentage = 1.f;
         }
     }
+}
+
+void UTVRMagWellComponent::HandleMagInsert(float DeltaSeconds)
+{
+	ATVRGunBase* Gun = GetGunOwner();
+    const USplineComponent* MyMagSpline = GetMagSpline();
+
+	
+	bWasReleasedByHand = true;
+	MagVelocity = FVector::ZeroVector;
+	UGripMotionControllerComponent* GrippingHand = CurrentMagazine->VRGripInterfaceSettings.HoldingControllers[0].HoldingController;               
+	const FTransform HandTransform = GrippingHand->GetComponentTransform();
+	const FTransform MagSlot = CurrentMagazine->GetGripSlotTransform(GrippingHand);
+	const FTransform MagOrigin = CurrentMagazine->GetAttachOrigin()->GetComponentTransform();
+	const FTransform QueryTransform = MagOrigin * MagSlot.Inverse() * HandTransform;
+                
+	FTransform FoundTransform;
+	GetSplineTransform(QueryTransform.GetLocation(), FoundTransform);
+
+	MagVelocity = (FoundTransform.GetLocation() - MagOrigin.GetLocation())/DeltaSeconds;
+	CurrentMagazine->SetMagazineOriginToTransform(FoundTransform);
+	CurrentMagazine->MagInsertPercentage = UTVRFunctionLibrary::GetDistanceAlongSplineClosestToWorldLocation(
+		MyMagSpline, FoundTransform.GetLocation())/MyMagSpline->GetSplineLength();
+}
+
+void UTVRMagWellComponent::HandleMagFall(float DeltaSeconds)
+{
+	ATVRGunBase* Gun = GetGunOwner();
+	const USplineComponent* MyMagSpline = GetMagSpline();
+
+	const auto MagCoM = CurrentMagazine->GetCenterOfMass();	
+	const auto RotVel = Gun->GetStaticMeshComponent()->GetPhysicsAngularVelocityInRadians();
+	const auto CentrifugalAcc = RotVel ^ (RotVel ^ (Gun->GetActorLocation()-MagCoM));
+	
+	const float DropAcceleration = GetWorld()->GetGravityZ();
+	MagVelocity = MagVelocity + (FVector::UpVector * DropAcceleration + CentrifugalAcc) * DeltaSeconds;
+	MagVelocity -= GetUpVector() * MagEjectAcceleration * DeltaSeconds; // quick and dirty solution. todo: a better implementation would increment the spline percentage instead
+	const FVector MagLoc = GetCurrentMagazine()->GetAttachOrigin()->GetComponentLocation();
+	const FVector ExternalVelocity = Gun->GetStaticMeshComponent()->GetPhysicsLinearVelocityAtPoint(GetComponentLocation());
+	const FVector DesiredMagLocInternal = MagLoc + (MagVelocity) * DeltaSeconds;
+	const FVector DesiredMagLoc = DesiredMagLocInternal - ExternalVelocity * DeltaSeconds;
+	
+	// const FTransform SplineTransform = MyMagSpline->GetTransformAtDistanceAlongSpline(MagDropDistance, ESplineCoordinateSpace::World, false);
+	FTransform FoundTransform;
+	GetSplineTransform(DesiredMagLoc, FoundTransform);
+	
+	const FVector SplineInternalLoc = MyMagSpline->FindLocationClosestToWorldLocation(DesiredMagLocInternal, ESplineCoordinateSpace::World);
+	MagVelocity = (SplineInternalLoc - MagLoc)/DeltaSeconds;
+	
+	CurrentMagazine->SetMagazineOriginToTransform(FoundTransform, true, FoundTransform);
+	MagVelocity = (FoundTransform.GetLocation() - MagLoc)/DeltaSeconds;
+	
+	CurrentMagazine->MagInsertPercentage =
+		UTVRFunctionLibrary::GetDistanceAlongSplineClosestToWorldLocation(MyMagSpline, FoundTransform.GetLocation())/MyMagSpline->GetSplineLength();
 }
 
 void UTVRMagWellComponent::OnMagFullyEjected()
@@ -281,9 +294,10 @@ void UTVRMagWellComponent::OnMagFullyInserted()
     if(HasMagazine())
     {
     	bWasReleasedByHand = false;
-        FTransform SplineTransform;
-    	GetSplineTransformAtTime(0.f, SplineTransform);
-        CurrentMagazine->SetMagazineOriginToTransform(TransformSplineToMagazineCoordinates(SplineTransform));
+        FTransform FoundTransform;
+    	GetSplineTransformAtTime(0.f, FoundTransform);
+        CurrentMagazine->SetMagazineOriginToTransform(FoundTransform);
+        CurrentMagazine->MagInsertPercentage = 1.f;
         bIsMagFree = false;
 
     	if(MagAudioComp)
@@ -302,7 +316,7 @@ void UTVRMagWellComponent::OnMagFullyInserted()
 
 bool UTVRMagWellComponent::ShouldInsertMag() const
 {
-    if(IsMagReleasePressed())
+    if(Execute_IsMagReleasePressed(this))
     {
         return false;
     }
@@ -379,7 +393,7 @@ bool UTVRMagWellComponent::TryReleaseMag()
     return false;
 }
 
-bool UTVRMagWellComponent::CanFeedAmmo() const
+bool UTVRMagWellComponent::CanFeedAmmo_Implementation() const
 {
     // As for now two conditions
     // 1) There needs to be a magazine
@@ -388,9 +402,9 @@ bool UTVRMagWellComponent::CanFeedAmmo() const
     return HasFullyInsertedMagazine() && !GetCurrentMagazine()->IsEmpty();
 }
 
-TSubclassOf<ATVRCartridge> UTVRMagWellComponent::TryFeedAmmo()
+TSubclassOf<ATVRCartridge> UTVRMagWellComponent::TryFeedAmmo_Implementation()
 {
-	if(CanFeedAmmo() && GetCurrentMagazine()->TryConsumeAmmo())
+	if(Execute_CanFeedAmmo(this) && GetCurrentMagazine()->TryConsumeAmmo())
 	{
 		return GetCurrentMagazine()->GetCartridgeType();
 	}
@@ -407,9 +421,9 @@ ATVRMagazine* UTVRMagWellComponent::GetCurrentMagazine() const
     return CurrentMagazine;
 }
 
-void UTVRMagWellComponent::OnMagReleasePressed(bool bAlternatePress)
+void UTVRMagWellComponent::OnMagReleasePressed_Implementation(bool bAlternatePress)
 {
-	const bool bAlreadyPressed = IsMagReleasePressed();
+	const bool bAlreadyPressed = Execute_IsMagReleasePressed(this);
 	if(!bAlternatePress && !bMagReleasePressed)
 	{
 		bMagReleasePressed = true;
@@ -424,13 +438,13 @@ void UTVRMagWellComponent::OnMagReleasePressed(bool bAlternatePress)
 	}
 }
 
-void UTVRMagWellComponent::OnMagReleaseReleased(bool bAlternatePress)
+void UTVRMagWellComponent::OnMagReleaseReleased_Implementation(bool bAlternatePress)
 {
 	if(!bAlternatePress && bMagReleasePressed)
 	{
 		bMagReleasePressed = false;
 	}
-	const bool bStillPressed = IsMagReleasePressed();
+	const bool bStillPressed = Execute_IsMagReleasePressed(this);
 	if(!bStillPressed)
 	{
 		if(EventOnMagReleaseReleased.IsBound())
@@ -441,9 +455,9 @@ void UTVRMagWellComponent::OnMagReleaseReleased(bool bAlternatePress)
 }
 
 
-void UTVRMagWellComponent::OnOwnerGripReleased(ATVRCharacter* OwningChar,UGripMotionControllerComponent* ReleasingHand)
+void UTVRMagWellComponent::OnOwnerGripReleased_Implementation(ATVRCharacter* OwningChar,UGripMotionControllerComponent* ReleasingHand)
 {
-	Super::OnOwnerGripReleased(OwningChar, ReleasingHand);
+	Super::OnOwnerGripReleased_Implementation(OwningChar, ReleasingHand);
 	if(GetCurrentMagazine() == nullptr)
 	{
 		return;
@@ -462,7 +476,7 @@ void UTVRMagWellComponent::OnOwnerGripReleased(ATVRCharacter* OwningChar,UGripMo
 	}
 }
 
-bool UTVRMagWellComponent::IsMagReleasePressed() const
+bool UTVRMagWellComponent::IsMagReleasePressed_Implementation() const
 {
 	return bMagReleasePressed || (GetCurrentMagazine() && GetCurrentMagazine()->IsMagReleasePressed());
 }
@@ -499,7 +513,7 @@ void UTVRMagWellComponent::GetSplineTransformAtTime(float inProgress, FTransform
 	}
 }
 
-ATVRMagazine* UTVRMagWellComponent::SpawnMagazineAttached(TSubclassOf<ATVRMagazine> MagazineClass)
+ATVRMagazine* UTVRMagWellComponent::SpawnMagazineAttached(TSubclassOf<ATVRMagazine> NewMagazineClass)
 {
 	if(GetCurrentMagazine() || !GetMagSpline())
 	{
@@ -524,30 +538,30 @@ ATVRMagazine* UTVRMagWellComponent::SpawnMagazineAttached(TSubclassOf<ATVRMagazi
 	{
 		if(const auto Gun = GetGunOwner())
 		{
-			if(MagazineClass == nullptr)
+			if(NewMagazineClass == nullptr)
 			{
 				if(AllowedMagazines.Num() > 0)
 				{
-					MagazineClass = AllowedMagazines[0];
+					NewMagazineClass = AllowedMagazines[0];
 				}
 				else
 				{
 					return nullptr;
 				}
 			}
-			if(IsAllowedMagType(MagazineClass) && GetWorld())
+			if(IsAllowedMagType(NewMagazineClass) && GetWorld())
 			{
 				FActorSpawnParameters SpawnParams;
 				SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 				SpawnParams.bAllowDuringConstructionScript = false;
 				// in theory we could allow spawn during construction script, but it would require addtional code like child actor components
 				
-				auto NewMag = World->SpawnActor<ATVRMagazine>(MagazineClass, SpawnParams);
+				auto NewMag = World->SpawnActor<ATVRMagazine>(NewMagazineClass, SpawnParams);
 				if(NewMag)
 				{
 					FTransform SplineTransform;
 					GetSplineTransformAtTime(0.f, SplineTransform);
-					NewMag->TryAttachToWeapon(Gun->GetStaticMeshComponent(), this, TransformSplineToMagazineCoordinates(SplineTransform));
+					NewMag->TryAttachToWeapon(Gun->GetStaticMeshComponent(), this, SplineTransform, 1.f);
 					CurrentMagazine = NewMag;
 					OnMagFullyInserted();
 					return NewMag;
@@ -556,6 +570,15 @@ ATVRMagazine* UTVRMagWellComponent::SpawnMagazineAttached(TSubclassOf<ATVRMagazi
 		}
 	}
 	return nullptr;
+}
+
+void UTVRMagWellComponent::GetAllowedCatridges_Implementation(TArray<TSubclassOf<ATVRCartridge>>& OutCartridges) const
+{
+	for(const auto MagClass : AllowedMagazines)
+	{
+		const auto MagCDO = GetDefault<ATVRMagazine>(MagClass);
+		OutCartridges.AddUnique(MagCDO->CartridgeType);
+	}
 }
 
 void UTVRMagWellComponent::StartInsertMagazine(ATVRMagazine* MagToInsert)
@@ -569,7 +592,7 @@ void UTVRMagWellComponent::StartInsertMagazine(ATVRMagazine* MagToInsert)
 	// const FTransform SplineTransform = GetMagSpline()->GetTransformAtTime(0.f, ESplineCoordinateSpace::World, false);
 	FTransform SplineTransform;
 	GetSplineTransform(MagToInsert->GetAttachOrigin()->GetComponentLocation(), SplineTransform);
-	if(MagToInsert->TryAttachToWeapon(Gun->GetStaticMeshComponent(), this, TransformSplineToMagazineCoordinates(SplineTransform)))
+	if(MagToInsert->TryAttachToWeapon(Gun->GetStaticMeshComponent(), this, SplineTransform, 0.f))
 	{
 		bIsMagFree = true;
 		//GetWorld()->GetTimerManager().SetTimerForNextTick(this, &UTVRMagWellComponent::RepositionMagazine);
@@ -587,12 +610,4 @@ void UTVRMagWellComponent::StartInsertMagazine(ATVRMagazine* MagToInsert)
 			EventOnMagazineStartInsert.Broadcast();
 		}
 	}
-}
-
-FTransform UTVRMagWellComponent::TransformSplineToMagazineCoordinates(const FTransform& InTransform) const
-{
-    const FVector NewLoc = InTransform.GetLocation();
-    // const FRotator NewRot = UKismetMathLibrary::MakeRotFromZX(-1.f * InTransform.GetRotation().GetForwardVector(), InTransform.GetRotation().GetUpVector());
-     const FRotator NewRot = UKismetMathLibrary::MakeRotFromXZ(GetForwardVector(), GetUpVector());
-    return FTransform(InTransform.GetRotation(), NewLoc, FVector::OneVector);
 }

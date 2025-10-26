@@ -1,7 +1,12 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "GripScripts/GS_Default.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GS_Default)
+
 #include "VRGripInterface.h"
+#include "Components/PrimitiveComponent.h"
+#include "GameFramework/Actor.h"
+#include "GameFramework/WorldSettings.h"
 #include "GripMotionControllerComponent.h"
 
 UGS_Default::UGS_Default(const FObjectInitializer& ObjectInitializer) :
@@ -181,7 +186,7 @@ void UGS_Default::CalculateSecondaryLocation(FVector& frontLoc, const FVector& B
 	{
 		bool bPulledCurrentTransform = false;
 
-		if (OtherController->CustomPivotComponent.IsValid())
+		if (IsValid(OtherController->CustomPivotComponent))
 		{
 			FTransform SecondaryTrans = FTransform::Identity;
 			SecondaryTrans = OtherController->GetPivotTransform();

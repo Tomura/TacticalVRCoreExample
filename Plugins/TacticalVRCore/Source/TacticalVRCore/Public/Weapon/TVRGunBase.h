@@ -9,6 +9,13 @@
 
 #include "TVRGunBase.generated.h"
 
+UENUM(BlueprintType)
+enum class ETVRHandSwapType : uint8
+{
+	KeepWorldPosition UMETA(ToolTip = "On hand swap, try to retain the guns world position. Best for Rifles."),
+	GripPrimary UMETA(ToolTip = "On hand swap, make the secondary hand grip the primary grip slot. Best for Pistols."),
+	None UMETA(ToolTip = "Do not Handswap, just release the other hand.")
+};
 
 UENUM(BlueprintType)
 enum class ETVRGunType : uint8
@@ -24,12 +31,13 @@ enum class ETVRGunClass : uint8
     Rifle
 };
 
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnGunSecondaryUsedDelegate);
 
 /**
  * 
  */
-UCLASS(Abstract)
+UCLASS(Abstract, HideCategories=("Static Mesh", "Materials", "Collision", "Lighting", "Navigation", "VirtualTexture"))
 class TACTICALVRCORE_API ATVRGunBase : public AGrippableStaticMeshActor, public ITVRHandSocketInterface
 {
 	GENERATED_BODY()
@@ -60,6 +68,10 @@ public:
 
 protected:
 	
+	/** Weak reference to primary hand */
+	UPROPERTY()
+	class UGripMotionControllerComponent* PrimaryController;
+	
 	/** Current Secondary Grip Controller */
 	UPROPERTY()
 	UGripMotionControllerComponent* SecondaryController;
@@ -70,6 +82,7 @@ protected:
 	UPROPERTY()
 	TArray<class UStaticMeshComponent*> GunMeshes;
 	TArray<class UTVRAttachmentPoint*> AttachmentPoints;
+	TArray<class ATVRWeaponAttachment*> Attachments;
 
 	UPROPERTY()
 	class UStaticMeshComponent* BoltMesh;
@@ -149,7 +162,7 @@ public:
 	FVROnGripSignature EventOnGripped;
 	FVROnDropSignature EventOnDropped;
 	
-	virtual void ClosestGripSlotInRange_Implementation(FVector WorldLocation, bool bSecondarySlot,  bool & bHadSlotInRange, FTransform & SlotWorldTransform, FName & SlotName, UGripMotionControllerComponent * CallingController = nullptr, FName OverridePrefix = NAME_None) override;
+	virtual void ClosestGripSlotInRange_Implementation(FVector WorldLocation, bool bSecondarySlot,  bool & bHadSlotInRange, FTransform & SlotWorldTransform, FName & SlotName, UGripMotionControllerComponent * CallingController = nullptr, FName OverridePrefix = EName::None) override;
 
 	virtual bool GetSecondarySlot(FVector WorldLocation, FTransform & OutTransform, FName & OutSlotName, UGripMotionControllerComponent * CallingController) const;
 	
@@ -312,13 +325,15 @@ public:
 	void InitChargingHandle();
 	
 	UFUNCTION(Category = "Gun", BlueprintCallable)
-	class UTVRMagazineCompInterface* GetMagInterface() const {return MagInterface;}
+	UActorComponent* GetMagInterface() const {return MagInterface;}
 
 	virtual void EjectRound(bool bSpent=true);
 	UFUNCTION(Category = "Gun", BlueprintImplementableEvent)
 	void OnEjectRound(bool bSpent, TSubclassOf<class ATVRCartridge> CartridgeType);
+
+	virtual bool TryFeedRoundFromMagazine();
 	
-	virtual bool TryChamberNewRound();
+	virtual bool TryChamberNewRound(TSubclassOf<ATVRCartridge> NewCartridge);
 	UFUNCTION(Category = "Gun", BlueprintImplementableEvent)
 	void OnChamberRound();
 
@@ -362,7 +377,8 @@ public:
     bool IsBoltLocked() const {return bIsBoltLocked;}
 
 	const TArray<UTVRAttachmentPoint*>& GetAttachmentPoints() const { return AttachmentPoints; }
-
+	const TArray<ATVRWeaponAttachment*>& GetAttachments() const { return Attachments; }
+	
 	template<class T> 
 	T* GetAttachmentPoint() const
 	{
@@ -389,6 +405,7 @@ public:
     	}
     	return nullptr;
     }
+	
 
 	UFUNCTION(Category="Gun", BlueprintImplementableEvent)
 	void OnBarrelChanged(TSubclassOf<class AWPNA_Barrel> NewBarrel);
@@ -411,6 +428,7 @@ public:
 	bool GetPrimaryHandTransform(FTransform& OutTransform, EControllerHand HandType) const;
 	virtual bool GetPrimaryHandTransform_Implementation(FTransform& OutTransform, EControllerHand HandType) const {return false;}
 
+	UGripMotionControllerComponent* GetPrimaryController() const {return PrimaryController;}
 	UGripMotionControllerComponent* GetSecondaryController() const;
 	const FBPActorGripInformation* GetSecondaryGripInfo() const;
 	
@@ -459,6 +477,14 @@ public:
 	
 	UFUNCTION(Category="Gun", BlueprintImplementableEvent)
 	void OnColorVariantChanged(uint8 newVariant);	
+
+
+	UFUNCTION(Category="Gun", BlueprintCallable)
+	bool IsBoltOpen() const { return BoltProgress >= BoltProgressEjectRound; }
+
+	void OnAttachmentAttached(class ATVRWeaponAttachment* NewAttachment, class UTVRAttachmentPoint* AttachmentPoint);
+	void OnAttachmentDetached(class ATVRWeaponAttachment* OldAttachment, class UTVRAttachmentPoint* AttachmentPoint);
+	
 	
 protected:
 
@@ -482,15 +508,15 @@ protected:
 	void UnlockBolt();
 	
 	virtual void CollectWeaponMeshes();
-	
-	/** Weak reference to primary hand */
-	TWeakObjectPtr<class UGripMotionControllerComponent> PrimaryHand;
+
+	UPROPERTY(Category="Gripping", EditDefaultsOnly, AdvancedDisplay)
+	FTransform CorrectionTransform;
 	
 	UPROPERTY()
     class UStaticMeshComponent* LoadedBullet;
     
 	UPROPERTY(Category="Gripping", BlueprintReadOnly, Instanced)
-	UGS_GunTools* GripScript;
+	class UGS_GunTools* GripScript;
 	
     bool bSkipHandSwap;
     
@@ -533,13 +559,12 @@ protected:
     /** Type of gun. Used mainly for sorting. */
 	UPROPERTY(Category = "Gun", EditDefaultsOnly)
 	ETVRGunType GunType;
-	
-    /** best used for pistols or other single hand weapons */
-    UPROPERTY(Category = "Gun", EditDefaultsOnly)
-    bool bHandSwapToPrimaryGripSlot;
-	
+
 	UPROPERTY(Category = "Gun", EditDefaultsOnly)
-	class UTVRMagazineCompInterface* MagInterface;
+	ETVRHandSwapType HandSwapType;
+		
+	UPROPERTY(Category = "Gun", EditDefaultsOnly)
+	UActorComponent* MagInterface;
 	
 	UPROPERTY(Category = "Gun|Recoil", BlueprintReadOnly, EditDefaultsOnly)
 	FVector RecoilImpulse;
@@ -559,7 +584,8 @@ protected:
 	 * Secondary Hand that is currently attached as primary,
 	 * but needs to be reattached as secondary once the primary slot is gripped again
 	 */
-	TWeakObjectPtr<class UGripMotionControllerComponent> SavedSecondaryHand;
+	UPROPERTY()
+	class UGripMotionControllerComponent* SavedSecondaryHand;
 	
 	/** Relative Transform of the secondary hand, used when re attaching the hand as a secondary. */
 	FTransform SavedSecondaryHandRelTransform;

@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "4.27",
+	"EngineAssociation": "5.3",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -23,15 +23,6 @@
 			"Enabled": true
 		},
 		{
-			"Name": "OculusVR",
-			"Enabled": false,
-			"SupportedTargetPlatforms": [
-				"Win32",
-				"Win64",
-				"Android"
-			]
-		},
-		{
 			"Name": "OpenXR",
 			"Enabled": true,
 			"SupportedTargetPlatforms": [
@@ -52,23 +43,6 @@
 			]
 		},
 		{
-			"Name": "OculusOpenXR",
-			"Enabled": true,
-			"SupportedTargetPlatforms": [
-				"Win32",
-				"Win64",
-				"Android"
-			]
-		},
-		{
-			"Name": "HPMotionController",
-			"Enabled": true,
-			"SupportedTargetPlatforms": [
-				"Win32",
-				"Win64"
-			]
-		},
-		{
 			"Name": "OpenXRExpansionPlugin",
 			"Enabled": true,
 			"SupportedTargetPlatforms": [
@@ -77,10 +51,6 @@
 				"Android",
 				"HoloLens"
 			]
-		},
-		{
-			"Name": "OpenVRExpansionPlugin",
-			"Enabled": true
 		},
 		{
 			"Name": "VRExpansionPlugin",

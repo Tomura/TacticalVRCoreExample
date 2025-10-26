@@ -3,15 +3,17 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Engine/Engine.h"
+//#include "Engine/Engine.h"
 #include "VRExpansionFunctionLibrary.h"
-#include "IXRTrackingSystem.h"
 #include "Components/ShapeComponent.h"
 #include "VRTrackedParentInterface.h"
 #include "ParentRelativeAttachmentComponent.generated.h"
 
 class AVRBaseCharacter;
 class AVRCharacter;
+
+/** Delegate for notification when the PRC starts rotating in yaw to match the snap / yaw tolerances. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FVRPRCBeginYawRotationEventSignature);
 
 // Type of rotation sampling to use
 UENUM(BlueprintType)
@@ -64,9 +66,16 @@ public:
 	FTransform LeftControllerTrans;
 	FTransform RightControllerTrans;
 
+	UPROPERTY(BlueprintAssignable, Category = "PRC Events")
+		FVRPRCBeginYawRotationEventSignature OnYawToleranceExceeded;
+
 	// If true uses feet/bottom of the capsule as the base Z position for this component instead of the HMD/Camera Z position
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRExpansionLibrary")
-	bool bUseFeetLocation;
+	bool bUseFeetLocation = false;
+
+	// If true uses center of capsule as the feet location instead
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRExpansionLibrary", meta = (EditCondition = "bUseFeetLocation"))
+		bool bUseCenterAsFeetLocation = false; // Should really be an enum with the above but that would make people change projects
 
 	// An additional value added to the relative position of the PRC 
 	// Can be used to offset the floor, or component heights if needed
@@ -74,8 +83,8 @@ public:
 		FVector CustomOffset;
 	
 	// If true will subtract the HMD's location from the position, useful for if the actors base is set to the HMD location always (simple character).
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRExpansionLibrary")
-	bool bOffsetByHMD;
+	//UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRExpansionLibrary")
+	//bool bOffsetByHMD;
 
 	// If true, will not set rotation every frame, only position
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRExpansionLibrary")
@@ -84,6 +93,15 @@ public:
 	// If true, this component will not perform logic in its tick, it will instead allow the character movement component to move it (unless the CMC is inactive, then it will go back to self managing)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRExpansionLibrary")
 		bool bUpdateInCharacterMovement;
+
+private:
+	UPROPERTY()
+		bool bIsPaused;
+public:
+
+	// Set the paused state of the PRC, if setting to paused then zero out rotation and zero out location will null out those values
+	UFUNCTION(BlueprintCallable, Category = "VRExpansionLibrary")
+		void SetPaused(bool bNewPaused, bool bZeroOutRotation, bool bZeroOutLocation);
 
 	// If valid will use this as the tracked parent instead of the HMD / Parent
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VRTrackedParentInterface")
@@ -95,9 +113,9 @@ public:
 	}
 
 	UPROPERTY()
-		TWeakObjectPtr<AVRCharacter> AttachChar;
+		TObjectPtr<AVRCharacter> AttachChar;
 	UPROPERTY()
-		TWeakObjectPtr<AVRBaseCharacter> AttachBaseChar;
+		TObjectPtr<AVRBaseCharacter> AttachBaseChar;
 
 	void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
 
@@ -114,40 +132,7 @@ public:
 	}
 
 	// Sets the rotation and location depending on the control variables. Trying to remove some code duplication here
-	inline void SetRelativeRotAndLoc(FVector NewRelativeLocation, FRotator NewRelativeRotation, float DeltaTime)
-	{
-
-		RunSampling(NewRelativeRotation, NewRelativeLocation);
-
-		if (bUseFeetLocation)
-		{
-			if (!bIgnoreRotationFromParent)
-			{
-				SetRelativeLocationAndRotation(
-					FVector(NewRelativeLocation.X, NewRelativeLocation.Y, 0.0f) + CustomOffset,
-					GetCalculatedRotation(NewRelativeRotation, DeltaTime)
-				);
-			}
-			else
-			{
-				SetRelativeLocation(FVector(NewRelativeLocation.X, NewRelativeLocation.Y, 0.0f) + CustomOffset);
-			}
-		}
-		else
-		{
-			if (!bIgnoreRotationFromParent)
-			{
-				SetRelativeLocationAndRotation(
-					NewRelativeLocation + CustomOffset,
-					GetCalculatedRotation(NewRelativeRotation, DeltaTime)
-				); // Use the HMD height instead
-			}
-			else
-			{
-				SetRelativeLocation(NewRelativeLocation + CustomOffset); // Use the HMD height instead
-			}
-		}
-	}
+	inline void SetRelativeRotAndLoc(FVector NewRelativeLocation, FRotator NewRelativeRotation, float DeltaTime);
 
 	FQuat GetCalculatedRotation(FRotator InverseRot, float DeltaTime)
 	{
@@ -182,6 +167,7 @@ public:
 				LerpTarget = FRotator::ClampAxis(InverseRot.Yaw);
 				LastLerpVal = FMath::FixedTurn(/*LastRot*/LastLerpVal, LerpTarget, LerpSpeed * DeltaTime);
 				FinalRot = FRotator(0, LastLerpVal, 0);
+				OnYawToleranceExceeded.Broadcast();
 			}
 			else // If we aren't then just directly set it to the correct rotation
 			{
@@ -222,7 +208,7 @@ public:
 	// Get combined direction angle up
 	void GetEstShoulderRotation(FRotator &InputHMDRotation, FVector &InputHMDLocation)
 	{
-		float WorldToMeters = GetWorld() ? GetWorld()->GetWorldSettings()->WorldToMeters : 100.0f;
+		/*float WorldToMeters = GetWorld() ? GetWorld()->GetWorldSettings()->WorldToMeters : 100.0f;
 
 		// Position shoulder (neck)
 		FTransform shoulder = FTransform::Identity;
@@ -236,7 +222,7 @@ public:
 
 		//DrawDebugSphere(GetWorld(), (shoulder * GetAttachParent()->GetComponentTransform()).GetLocation(), 4.0f, 32, FColor::White);
 		return;
-
+		*/
 
 		/*if (IsLocallyControlled() && GEngine->XRSystem.IsValid())
 		{

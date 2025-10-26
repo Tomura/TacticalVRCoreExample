@@ -1,12 +1,18 @@
 #include "Misc/VREPhysicalAnimationComponent.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(VREPhysicalAnimationComponent)
+
 #include "SceneManagement.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "PhysicsEngine/PhysicsAsset.h"
-#if PHYSICS_INTERFACE_PHYSX
-#include "PhysXPublic.h"
-#endif
+#include "PhysicsEngine/ConstraintInstance.h"
 #include "ReferenceSkeleton.h"
 #include "DrawDebugHelpers.h"
+
+#if ENABLE_DRAW_DEBUG
+#include "Chaos/ImplicitObject.h"
+#include "Chaos/TriangleMeshImplicitObject.h"
+#endif
+
 #include "Physics/PhysicsInterfaceCore.h"
 #include "Physics/PhysicsInterfaceTypes.h"
 
@@ -78,7 +84,7 @@ FTransform UVREPhysicalAnimationComponent::GetRefPoseBoneRelativeTransform(USkel
 	{
 		//SkelMesh->ClearRefPoseOverride();
 		FReferenceSkeleton RefSkel;
-		RefSkel = SkeleMesh->SkeletalMesh->GetRefSkeleton();
+		RefSkel = SkeleMesh->GetSkinnedAsset()->GetRefSkeleton();
 
 		BoneTransform = GetWorldSpaceRefBoneTransform(RefSkel, RefSkel.FindBoneIndex(BoneName), RefSkel.FindBoneIndex(ParentBoneName));
 	}
@@ -105,10 +111,9 @@ void UVREPhysicalAnimationComponent::SetupWeldedBoneDriver_Implementation(bool b
 	//SkeleMesh->GetRefPosePosition()
 
 	UPhysicsAsset* PhysAsset = SkeleMesh ? SkeleMesh->GetPhysicsAsset() : nullptr;
-	if (PhysAsset && SkeleMesh->SkeletalMesh)
+	if (PhysAsset && SkeleMesh->GetSkinnedAsset())
 	{
 
-//#if PHYSICS_INTERFACE_PHYSX
 		for (FName BaseWeldedBoneDriverName : BaseWeldedBoneDriverNames)
 		{
 			int32 ParentBodyIdx = PhysAsset->FindBodyIndex(BaseWeldedBoneDriverName);
@@ -138,11 +143,8 @@ void UVREPhysicalAnimationComponent::SetupWeldedBoneDriver_Implementation(bool b
 									continue;
 								}
 							}
-#if WITH_CHAOS 
+
 							FKShapeElem* ShapeElem = FChaosUserData::Get<FKShapeElem>(FPhysicsInterface::GetUserData(Shape));
-#elif PHYSICS_INTERFACE_PHYSX
-							FKShapeElem* ShapeElem = FPhysxUserData::Get<FKShapeElem>(FPhysicsInterface::GetUserData(Shape));
-#endif
 							if (ShapeElem)
 							{
 								FName TargetBoneName = ShapeElem->GetName();
@@ -152,7 +154,7 @@ void UVREPhysicalAnimationComponent::SetupWeldedBoneDriver_Implementation(bool b
 								{
 									FWeldedBoneDriverData DriverData;
 									DriverData.BoneName = TargetBoneName;
-									DriverData.ShapeHandle = Shape;
+									//DriverData.ShapeHandle = Shape;
 
 									if (bReInit && OriginalData.Num() - 1 >= BoneDriverMap.Num())
 									{
@@ -170,7 +172,7 @@ void UVREPhysicalAnimationComponent::SetupWeldedBoneDriver_Implementation(bool b
 										//FTransform RelativeTM = FPhysicsInterface::GetLocalTransform(Shape) * FPhysicsInterface::GetGlobalPose_AssumesLocked(ActorHandle);
 
 										//RelativeTM = RelativeTM * BoneTransform.Inverse();
-
+										//BoneTransform.SetScale3D(FVector(1.0f));
 										DriverData.RelativeTransform = FPhysicsInterface::GetLocalTransform(Shape) * BoneTransform;
 									}
 
@@ -191,7 +193,6 @@ void UVREPhysicalAnimationComponent::SetupWeldedBoneDriver_Implementation(bool b
 				}
 			}
 		}
-//#endif
 	}
 }
 
@@ -204,23 +205,16 @@ void UVREPhysicalAnimationComponent::TickComponent(float DeltaTime, enum ELevelT
 
 void UVREPhysicalAnimationComponent::UpdateWeldedBoneDriver(float DeltaTime)
 {
-
 	if (!BoneDriverMap.Num())
 		return;
 
-	/*
-	#if WITH_CHAOS || WITH_IMMEDIATE_PHYSX
-		//ensure(false);
-#else
-#endif
-	*/
 	USkeletalMeshComponent* SkeleMesh = GetSkeletalMesh();
 
 	if (!SkeleMesh || !SkeleMesh->Bodies.Num())// || (!SkeleMesh->IsSimulatingPhysics(BaseWeldedBoneDriverNames) && !SkeleMesh->IsWelded()))
 		return;
 
 	UPhysicsAsset* PhysAsset = SkeleMesh ? SkeleMesh->GetPhysicsAsset() : nullptr;
-	if(PhysAsset && SkeleMesh->SkeletalMesh)
+	if(PhysAsset && SkeleMesh->GetSkinnedAsset())
 	{
 		for (FName BaseWeldedBoneDriverName : BaseWeldedBoneDriverNames)
 		{
@@ -228,13 +222,24 @@ void UVREPhysicalAnimationComponent::UpdateWeldedBoneDriver(float DeltaTime)
 
 			if (FBodyInstance* ParentBody = (ParentBodyIdx == INDEX_NONE ? nullptr : SkeleMesh->Bodies[ParentBodyIdx]))
 			{
-				if (!ParentBody->IsInstanceSimulatingPhysics() && !ParentBody->WeldParent)
-					return;
+				// Allow it to run even when not simulating physics, if we have a welded root then it needs to animate anyway
+				//if (!ParentBody->IsInstanceSimulatingPhysics() && !ParentBody->WeldParent)
+				//	return;
 
 				FPhysicsActorHandle& ActorHandle = ParentBody->WeldParent ? ParentBody->WeldParent->GetPhysicsActorHandle() : ParentBody->GetPhysicsActorHandle();
 
 				if (FPhysicsInterface::IsValid(ActorHandle) /*&& FPhysicsInterface::IsRigidBody(ActorHandle)*/)
 				{
+
+#if ENABLE_DRAW_DEBUG
+					if (bDebugDrawCollision)
+					{
+						Chaos::FDebugDrawQueue::GetInstance().SetConsumerActive(this, true); // Need to deactivate this later as well
+						Chaos::FDebugDrawQueue::GetInstance().SetMaxCost(20000);
+						//Chaos::FDebugDrawQueue::GetInstance().SetRegionOfInterest(SkeleMesh->GetComponentLocation(), 1000.0f);
+						Chaos::FDebugDrawQueue::GetInstance().SetEnabled(true);
+					}
+#endif
 
 					bool bModifiedBody = false;
 					FPhysicsCommand::ExecuteWrite(ActorHandle, [&](FPhysicsActorHandle& Actor)
@@ -242,11 +247,20 @@ void UVREPhysicalAnimationComponent::UpdateWeldedBoneDriver(float DeltaTime)
 						PhysicsInterfaceTypes::FInlineShapeArray Shapes;
 						FPhysicsInterface::GetAllShapes_AssumedLocked(Actor, Shapes);
 
-						FTransform GlobalPose = FPhysicsInterface::GetGlobalPose_AssumesLocked(ActorHandle).Inverse();
-						
+						FTransform GlobalPose = FPhysicsInterface::GetGlobalPose_AssumesLocked(ActorHandle);
+						FTransform GlobalPoseInv = GlobalPose.Inverse();
+
+
+#if ENABLE_DRAW_DEBUG
+						if (bDebugDrawCollision)
+						{
+							Chaos::FDebugDrawQueue::GetInstance().SetRegionOfInterest(GlobalPose.GetLocation(), 100.0f);
+						}
+
+#endif
+
 						for (FPhysicsShapeHandle& Shape : Shapes)
 						{
-
 							if (ParentBody->WeldParent)
 							{
 								const FBodyInstance* OriginalBI = ParentBody->WeldParent->GetOriginalBodyInstance(Shape);
@@ -258,7 +272,19 @@ void UVREPhysicalAnimationComponent::UpdateWeldedBoneDriver(float DeltaTime)
 								}
 							}
 
-							if (FWeldedBoneDriverData* WeldedData = BoneDriverMap.FindByKey(Shape))
+							// Log the shapes name to match to the bone
+							FName TargetBoneName = NAME_None;
+							if (FKShapeElem* ShapeElem = FChaosUserData::Get<FKShapeElem>(FPhysicsInterface::GetUserData(Shape)))
+							{
+								TargetBoneName = ShapeElem->GetName();
+							}
+							else
+							{
+								// Cant find the matching shape
+								continue;
+							}
+
+							if (FWeldedBoneDriverData* WeldedData = BoneDriverMap.FindByKey(TargetBoneName/*Shape*/))
 							{
 								bModifiedBody = true;
 
@@ -267,7 +293,10 @@ void UVREPhysicalAnimationComponent::UpdateWeldedBoneDriver(float DeltaTime)
 								// This fixes a bug with simulating inverse scaled meshes
 								//Trans.SetScale3D(FVector(1.f) * Trans.GetScale3D().GetSignVector());
 								FTransform GlobalTransform = WeldedData->RelativeTransform * Trans;
-								FTransform RelativeTM = GlobalTransform * GlobalPose;
+								FTransform RelativeTM = GlobalTransform * GlobalPoseInv;
+
+								// Fix chaos ensure
+								RelativeTM.RemoveScaling();
 
 								if (!WeldedData->LastLocal.Equals(RelativeTM))
 								{
@@ -275,11 +304,83 @@ void UVREPhysicalAnimationComponent::UpdateWeldedBoneDriver(float DeltaTime)
 									WeldedData->LastLocal = RelativeTM;
 								}
 							}
+
+#if ENABLE_DRAW_DEBUG
+							if (bDebugDrawCollision)
+							{
+								const Chaos::FImplicitObject* ShapeImplicit = Shape.Shape->GetGeometry().Get();
+								Chaos::EImplicitObjectType Type = ShapeImplicit->GetType();
+
+								FTransform shapeTransform = FPhysicsInterface::GetLocalTransform(Shape);
+								FTransform FinalTransform = shapeTransform * GlobalPose;
+								Chaos::FRigidTransform3 RigTransform(FinalTransform);
+								Chaos::DebugDraw::DrawShape(RigTransform, ShapeImplicit, Chaos::FShapeOrShapesArray(), FColor::White);
+							}
+#endif
 						}
 					});
+
+#if ENABLE_DRAW_DEBUG
+					if (bDebugDrawCollision)
+					{
+						// Get the latest commands
+						TArray<Chaos::FLatentDrawCommand> DrawCommands;
+						Chaos::FDebugDrawQueue::GetInstance().ExtractAllElements(DrawCommands);
+						if (DrawCommands.Num())
+						{
+							DebugDrawMesh(DrawCommands);
+						}
+						Chaos::FDebugDrawQueue::GetInstance().SetConsumerActive(this, false); // Need to deactivate this later as well
+						Chaos::FDebugDrawQueue::GetInstance().SetEnabled(false);
+					}
+#endif
 				}
 
 			}
 		}
 	}
 }
+
+#if ENABLE_DRAW_DEBUG
+void UVREPhysicalAnimationComponent::DebugDrawMesh(const TArray<Chaos::FLatentDrawCommand>& DrawCommands)
+{
+	UWorld* World = this->GetWorld();
+
+	// Draw all the captured elements in the viewport
+	for (const Chaos::FLatentDrawCommand& Command : DrawCommands)
+	{
+		switch (Command.Type)
+		{
+		case Chaos::FLatentDrawCommand::EDrawType::Point:
+			DrawDebugPoint(World, Command.LineStart, Command.Thickness, Command.Color, Command.bPersistentLines, -1.f, Command.DepthPriority);
+			break;
+		case Chaos::FLatentDrawCommand::EDrawType::Line:
+			DrawDebugLine(World, Command.LineStart, Command.LineEnd, Command.Color, Command.bPersistentLines, -1.0f, 0.f, 0.f);
+			break;
+		case Chaos::FLatentDrawCommand::EDrawType::DirectionalArrow:
+			DrawDebugDirectionalArrow(World, Command.LineStart, Command.LineEnd, Command.ArrowSize, Command.Color, Command.bPersistentLines, -1.f, Command.DepthPriority, Command.Thickness);
+			break;
+		case Chaos::FLatentDrawCommand::EDrawType::Sphere:
+			DrawDebugSphere(World, Command.LineStart, Command.Radius, Command.Segments, Command.Color, Command.bPersistentLines, -1.f, Command.DepthPriority, Command.Thickness);
+			break;
+		case Chaos::FLatentDrawCommand::EDrawType::Box:
+			DrawDebugBox(World, Command.Center, Command.Extent, Command.Rotation, Command.Color, Command.bPersistentLines, -1.f, Command.DepthPriority, Command.Thickness);
+			break;
+		case Chaos::FLatentDrawCommand::EDrawType::String:
+			DrawDebugString(World, Command.TextLocation, Command.Text, Command.TestBaseActor, Command.Color, -1.f, Command.bDrawShadow, Command.FontScale);
+			break;
+		case Chaos::FLatentDrawCommand::EDrawType::Circle:
+		{
+			FMatrix M = FRotationMatrix::MakeFromYZ(Command.YAxis, Command.ZAxis);
+			M.SetOrigin(Command.Center);
+			DrawDebugCircle(World, M, Command.Radius, Command.Segments, Command.Color, Command.bPersistentLines, -1.f, Command.DepthPriority, Command.Thickness, Command.bDrawAxis);
+			break;
+		}
+		case Chaos::FLatentDrawCommand::EDrawType::Capsule:
+			DrawDebugCapsule(World, Command.Center, Command.HalfHeight, Command.Radius, Command.Rotation, Command.Color, Command.bPersistentLines, -1.f, Command.DepthPriority, Command.Thickness);
+		default:
+			break;
+		}
+	}
+}
+#endif

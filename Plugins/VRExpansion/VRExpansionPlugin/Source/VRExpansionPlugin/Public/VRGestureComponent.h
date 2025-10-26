@@ -3,21 +3,20 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Engine/Engine.h"
+//#include "Engine/Engine.h"
 #include "VRBPDatatypes.h"
-#include "Algo/Reverse.h"
-#include "Components/SplineMeshComponent.h"
-#include "Components/SplineComponent.h"
-#include "VRBaseCharacter.h"
 #include "Engine/DataAsset.h"
-#include "DrawDebugHelpers.h"
-#include "Components/LineBatchComponent.h"
-#include "Engine/EngineTypes.h"
-#include "Engine/EngineBaseTypes.h"
+
+//#include "Engine/EngineTypes.h"
+//#include "Engine/EngineBaseTypes.h"
 #include "TimerManager.h"
 #include "VRGestureComponent.generated.h"
 
 DECLARE_STATS_GROUP(TEXT("TICKGesture"), STATGROUP_TickGesture, STATCAT_Advanced);
+
+class USplineMeshComponent;
+class USplineComponent;
+class AVRBaseCharacter;
 
 
 UENUM(Blueprintable)
@@ -36,6 +35,15 @@ enum class EVRGestureMirrorMode : uint8
 	GES_MirrorLeft,
 	GES_MirrorRight,
 	GES_MirrorBoth
+};
+
+UENUM(Blueprintable)
+enum class EVRGestureFlattenAxis : uint8
+{
+	GES_FlattenX,
+	GES_FlattenY,
+	GES_FlattenZ,
+	GES_DontFlatten
 };
 
 USTRUCT(BlueprintType, Category = "VRGestures")
@@ -95,7 +103,7 @@ public:
 	uint8 GestureType;
 
 	// Samples in the recorded gesture
-	UPROPERTY(BlueprintReadWrite, VisibleAnywhere, Category = "VRGesture")
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category = "VRGesture")
 	TArray<FVector> Samples;
 
 	UPROPERTY(BlueprintReadWrite, VisibleAnywhere, Category = "VRGesture")
@@ -184,10 +192,10 @@ struct VREXPANSIONPLUGIN_API FVRGestureSplineDraw
 public:
 
 	UPROPERTY()
-	USplineComponent* SplineComponent;
+		TObjectPtr<USplineComponent> SplineComponent;
 
 	UPROPERTY()
-	TArray<USplineMeshComponent*> SplineMeshes;
+	TArray<TObjectPtr<USplineMeshComponent>> SplineMeshes;
 
 	int LastIndexSet;
 	int NextIndexCleared;
@@ -206,7 +214,7 @@ public:
 };
 
 /** Delegate for notification when the lever state changes. */
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FVRGestureDetectedSignature, uint8, GestureType, FString, DetectedGestureName, int, DetectedGestureIndex, UGesturesDatabase *, GestureDataBase);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FiveParams(FVRGestureDetectedSignature, uint8, GestureType, FString, DetectedGestureName, int, DetectedGestureIndex, UGesturesDatabase *, GestureDataBase, FVector, OriginalUnscaledGestureSize);
 
 /**
 * A scene component that can sample its positions to record / track VR gestures
@@ -230,7 +238,7 @@ public:
 	// if I decide to support three point tracked gestures or something at some point, but its a waste for single point.
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "BaseVRCharacter")
-		void OnGestureDetected(uint8 GestureType, FString &DetectedGestureName, int & DetectedGestureIndex, UGesturesDatabase * GestureDatabase);
+		void OnGestureDetected(uint8 GestureType, FString &DetectedGestureName, int & DetectedGestureIndex, UGesturesDatabase * GestureDatabase, FVector OriginalUnscaledGestureSize);
 
 	// Call to use an object
 	UPROPERTY(BlueprintAssignable, Category = "VRGestures")
@@ -238,7 +246,7 @@ public:
 
 	// Known sequences
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "VRGestures")
-	UGesturesDatabase *GesturesDB;
+		TObjectPtr<UGesturesDatabase> GesturesDB;
 
 	// Tolerance within we throw out duplicate samples
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "VRGestures")
@@ -250,7 +258,7 @@ public:
 
 	// Tolerance within we throw out duplicate samples
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "VRGestures")
-		AVRBaseCharacter * TargetCharacter;
+		TObjectPtr<AVRBaseCharacter> TargetCharacter;
 
 	FVRGestureSplineDraw RecordingGestureDraw;
 
@@ -264,7 +272,7 @@ public:
 
 	// Mesh to use when drawing splines
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "VRGestures")
-		UStaticMesh* SplineMesh;
+		TObjectPtr<UStaticMesh> SplineMesh;
 
 	// Scaler to apply to the spline mesh components
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "VRGestures")
@@ -272,7 +280,7 @@ public:
 
 	// Material to use when drawing splines
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "VRGestures")
-		UMaterialInterface* SplineMaterial;
+		TObjectPtr<UMaterialInterface> SplineMaterial;
 
 	// HTZ to run recording at for detection and saving - now being used as a frame time instead of a HTZ
 	float RecordingDelta;
@@ -280,11 +288,11 @@ public:
 	// Number of samples to keep in memory during detection
 	int RecordingBufferSize;
 
-	float RecordingClampingTolerance;
-	bool bRecordingFlattenGesture;
-	bool bDrawRecordingGesture;
-	bool bDrawRecordingGestureAsSpline;
-	bool bGestureChanged;
+	float RecordingClampingTolerance = 0.0f;
+	EVRGestureFlattenAxis RecordingFlattenAxis = EVRGestureFlattenAxis::GES_DontFlatten;
+	bool bDrawRecordingGesture = false;
+	bool bDrawRecordingGestureAsSpline = false;
+	bool bGestureChanged = false;
 
 	// Handle to our update timer
 	FTimerHandle TickGestureTimer_Handle;
@@ -322,6 +330,7 @@ public:
 
 	FVector StartVector;
 	FTransform OriginatingTransform;
+	FTransform ParentRelativeTransform;
 
 	/* Function to begin recording a gesture for detection or saving
 	*
@@ -335,7 +344,7 @@ public:
 	* ClampingTolerance: If larger than 0.0, we will clamp points to a grid of this size
 	*/
 	UFUNCTION(BlueprintCallable, Category = "VRGestures")
-		void BeginRecording(bool bRunDetection, bool bFlattenGesture = true, bool bDrawGesture = true, bool bDrawAsSpline = false, int SamplingHTZ = 30, int SampleBufferSize = 60, float ClampingTolerance = 0.01f);
+		void BeginRecording(bool bRunDetection, EVRGestureFlattenAxis FlattenAxis = EVRGestureFlattenAxis::GES_FlattenX, bool bDrawGesture = true, bool bDrawAsSpline = false, int SamplingHTZ = 30, int SampleBufferSize = 60, float ClampingTolerance = 0.01f);
 
 	// Ends recording and returns the recorded gesture
 	UFUNCTION(BlueprintCallable, Category = "VRGestures")

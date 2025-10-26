@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Tammo Beil. All rights reserved.
+// This file is covered by the LICENSE file in the root of this plugin.
 
 
 #include "Weapon/Component/TVRLoadableBreechComponent.h"
@@ -7,6 +7,7 @@
 #include "TacticalCollisionProfiles.h"
 #include "Components/AudioComponent.h"
 #include "Weapon/TVRCartridge.h"
+#include "GripMotionControllerComponent.h"
 #include "Weapon/Component/TVRGunFireComponent.h"
 
 #define MAG_AUDIO_StartInsert 0
@@ -63,17 +64,17 @@ void ULoadableBreechComponent::BeginPlay()
 
 void ULoadableBreechComponent::BeginDestroy()
 {
-	if(GetCurrentCartridge() && !GetCurrentCartridge()->IsPendingKill())
+	if(IsValid(GetCurrentCartridge()))
 	{
 		GetCurrentCartridge()->OnGripped.RemoveDynamic(this, &ULoadableBreechComponent::OnCartridgeGrabbed);
 		GetCurrentCartridge()->OnDropped.RemoveDynamic(this, &ULoadableBreechComponent::OnCartridgeDropped);
 		GetCurrentCartridge()->Destroy();
 	}
-	if(GetFiringComp() && !GetFiringComp()->IsPendingKill())
+	if(IsValid(GetFiringComp()))
 	{
 		GetFiringComp()->OnCartridgeSpent.RemoveDynamic(this, &ULoadableBreechComponent::OnCartridgeSpent);
 	}
-	if(GetCartridgeInsertAudioComp() && !GetCartridgeInsertAudioComp()->IsPendingKill())
+	if(IsValid(GetCartridgeInsertAudioComp()))
 	{
 		GetCartridgeInsertAudioComp()->DestroyComponent();
 	}
@@ -98,7 +99,7 @@ void ULoadableBreechComponent::TickComponent(float DeltaTime, ELevelTick TickTyp
 		{			
 			UGripMotionControllerComponent* GrippingHand = GetCurrentCartridge()->VRGripInterfaceSettings.HoldingControllers[0].HoldingController;
 			const FTransform HandTransform = GrippingHand->GetPivotTransform();
-			const auto HandSocket = ITVRHandSocketInterface::Execute_GetHandSocket(GetCurrentCartridge(), NAME_None);
+			const auto HandSocket = ITVRHandSocketInterface::Execute_GetHandSocket(GetCurrentCartridge(), EName::None);
 			const FTransform SocketTransform = HandSocket ? HandSocket->GetRelativeTransform() : FTransform::Identity;
 			const FVector ClosestPointUnlimited = FMath::ClosestPointOnInfiniteLine(TargetLoc, ZeroLoc, (SocketTransform.Inverse() * HandTransform).GetLocation());
 			const float ProgressUnlimited = GetComponentTransform().InverseTransformVector(ClosestPointUnlimited - ZeroLoc).X / Distance;	
@@ -155,39 +156,39 @@ void ULoadableBreechComponent::TickComponent(float DeltaTime, ELevelTick TickTyp
 	}
 }
 
-void ULoadableBreechComponent::SetMagazineCollisionProfile(FName NewProfile)
+void ULoadableBreechComponent::SetMagazineCollisionProfile_Implementation(FName NewProfile)
 {
 	Super::SetMagazineCollisionProfile(NewProfile);
 }
 
-bool ULoadableBreechComponent::CanBoltLock() const
+bool ULoadableBreechComponent::CanBoltLock_Implementation() const
 {
 	return false;
 }
 
-bool ULoadableBreechComponent::IsEmpty() const
+bool ULoadableBreechComponent::IsEmpty_Implementation() const
 {
 	return CurrentCartridge == nullptr;
 }
 
-float ULoadableBreechComponent::GetAmmoInsertProgress()
+float ULoadableBreechComponent::GetAmmoInsertProgress_Implementation() const
 {
 	return GetCurrentCartridge() ? Progress : 0.f;
 }
 
 
-void ULoadableBreechComponent::OnOwnerGripReleased(ATVRCharacter* OwningChar,
+void ULoadableBreechComponent::OnOwnerGripReleased_Implementation(ATVRCharacter* OwningChar,
 	UGripMotionControllerComponent* ReleasingHand)
 {
 	Super::OnOwnerGripReleased(OwningChar, ReleasingHand);
 }
 
-bool ULoadableBreechComponent::CanFeedAmmo() const
+bool ULoadableBreechComponent::CanFeedAmmo_Implementation() const
 {
 	return GetCurrentCartridge() != nullptr;
 }
 
-TSubclassOf<ATVRCartridge> ULoadableBreechComponent::TryFeedAmmo()
+TSubclassOf<ATVRCartridge> ULoadableBreechComponent::TryFeedAmmo_Implementation()
 {
 	return GetCurrentCartridge()->GetClass();
 }
@@ -308,6 +309,11 @@ bool ULoadableBreechComponent::IsAllowedAmmo(TSubclassOf<ATVRCartridge> Cartridg
 	return AllowedCartridges.Find(CartridgeClass) != INDEX_NONE;
 }
 
+void ULoadableBreechComponent::GetAllowedCatridges_Implementation(TArray<TSubclassOf<ATVRCartridge>>& OutCartridges) const
+{
+	OutCartridges.Append(AllowedCartridges);
+}
+
 void ULoadableBreechComponent::BeginInsertCartridge(ATVRCartridge* CartridgeToInsert)
 {
 	if(CartridgeToInsert->VRGripInterfaceSettings.bIsHeld)
@@ -386,7 +392,7 @@ void ULoadableBreechComponent::AttachCartridge(ATVRCartridge* Cartridge)
 	{		
 		const FTransform SavedRelTransform = GrippingHand ? GrippingHand->GrippedObjects[0].RelativeTransform : FTransform::Identity;
 		GrippingHand->DropObjectByInterface(Cartridge, 0, FVector::ZeroVector, FVector::ZeroVector);
-		GrippingHand->GripObjectByInterface(Cartridge, SavedRelTransform, true, EName::NAME_None, EName::NAME_None, true);
+		GrippingHand->GripObjectByInterface(Cartridge, SavedRelTransform, true, EName::None, EName::None, true);
 	}
 	
 	SetCurrentCartridge(Cartridge);
@@ -414,14 +420,14 @@ ATVRCartridge* ULoadableBreechComponent::DetachCartridge()
 			GrippingHand->DropObjectByInterface(PrevCartridge,
 				0, FVector::ZeroVector, FVector::ZeroVector);
 			GrippingHand->GripObjectByInterface(PrevCartridge, RelTransform, true,
-				EName::NAME_None, EName::NAME_None, true);
+				EName::None, EName::None, true);
 		}
 	}
 	else
 	{
 		PrevCartridge->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 		PrevCartridge->GetStaticMeshComponent()->SetSimulatePhysics(true);
-		PrevCartridge->GetStaticMeshComponent()->AddImpulse(GetForwardVector() * CartridgeSpeed, NAME_None, true);
+		PrevCartridge->GetStaticMeshComponent()->AddImpulse(GetForwardVector() * CartridgeSpeed, EName::None, true);
 	}
 	return PrevCartridge;
 }

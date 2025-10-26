@@ -2,17 +2,10 @@
 
 #pragma once
 #include "CoreMinimal.h"
-#include "VRBPDatatypes.h"
 #include "VRBaseCharacter.h"
-#include "GripMotionControllerComponent.h"
-#include "VRExpansionFunctionLibrary.h"
-#include "ReplicatedVRCameraComponent.h"
-#include "ParentRelativeAttachmentComponent.h"
-#include "VRRootComponent.h"
-#include "VRCharacterMovementComponent.h"
-#include "Runtime/Launch/Resources/Version.h"
 #include "VRCharacter.generated.h"
 
+class UVRRootComponent;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogVRCharacter, Log, All);
 
@@ -28,7 +21,9 @@ public:
 	virtual bool TeleportTo(const FVector& DestLocation, const FRotator& DestRotation, bool bIsATest = false, bool bNoCheck = false) override;
 
 	UPROPERTY(Category = VRCharacter, VisibleAnywhere, Transient, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))	
-	UVRRootComponent * VRRootReference;
+		TObjectPtr<UVRRootComponent> VRRootReference;
+
+	virtual FVector GetTargetHeightOffset() override;
 
 	// Regenerates the base offsetcomponenttoworld that VR uses
 	virtual void RegenerateOffsetComponentToWorld(bool bUpdateBounds, bool bCalculatePureYaw) override;
@@ -40,6 +35,9 @@ public:
 	pass in a teleport location and it provides the correct spot for it to be at your feet
 	*/
 	virtual FVector GetTeleportLocation(FVector OriginalLocation) override;
+
+	// Returns the head location projected from the world offset (if applicable)
+	virtual FVector GetProjectedVRLocation() const override;
 	
 	
 	// Overriding to correct some nav stuff

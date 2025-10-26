@@ -1,6 +1,12 @@
 // Copyright 1998-2016 Epic Games, Inc. All Rights Reserved.
 
 #include "Grippables/GrippableSkeletalMeshComponent.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GrippableSkeletalMeshComponent)
+
+#include "GripMotionControllerComponent.h"
+#include "VRExpansionFunctionLibrary.h"
+#include "GripScripts/VRGripScriptBase.h"
+#include "PhysicsEngine/PhysicsAsset.h" // Tmp until epic bug fixes skeletal welding
 #include "Net/UnrealNetwork.h"
 
   //=============================================================================
@@ -28,6 +34,10 @@ UGrippableSkeletalMeshComponent::UGrippableSkeletalMeshComponent(const FObjectIn
 
 	bRepGripSettingsAndGameplayTags = true;
 	bReplicateGripScripts = false;
+
+	// #TODO we can register them maybe in the future
+	// Don't use the replicated list, use our custom replication instead
+	bReplicateUsingRegisteredSubObjectList = false;
 }
 
 void UGrippableSkeletalMeshComponent::GetLifetimeReplicatedProps(TArray< class FLifetimeProperty > & OutLifetimeProps) const
@@ -47,24 +57,24 @@ void UGrippableSkeletalMeshComponent::PreReplication(IRepChangedPropertyTracker 
 	Super::PreReplication(ChangedPropertyTracker);
 
 	// Don't replicate if set to not do it
-	DOREPLIFETIME_ACTIVE_OVERRIDE(UGrippableSkeletalMeshComponent, VRGripInterfaceSettings, bRepGripSettingsAndGameplayTags);
-	DOREPLIFETIME_ACTIVE_OVERRIDE(UGrippableSkeletalMeshComponent, GameplayTags, bRepGripSettingsAndGameplayTags);
-	DOREPLIFETIME_ACTIVE_OVERRIDE(UGrippableSkeletalMeshComponent, GripLogicScripts, bReplicateGripScripts);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(UGrippableSkeletalMeshComponent, VRGripInterfaceSettings, bRepGripSettingsAndGameplayTags);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(UGrippableSkeletalMeshComponent, GameplayTags, bRepGripSettingsAndGameplayTags);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(UGrippableSkeletalMeshComponent, GripLogicScripts, bReplicateGripScripts);
 
-	DOREPLIFETIME_ACTIVE_OVERRIDE_PRIVATE_PROPERTY(USceneComponent, RelativeLocation, bReplicateMovement);
-	DOREPLIFETIME_ACTIVE_OVERRIDE_PRIVATE_PROPERTY(USceneComponent, RelativeRotation, bReplicateMovement);
-	DOREPLIFETIME_ACTIVE_OVERRIDE_PRIVATE_PROPERTY(USceneComponent, RelativeScale3D, bReplicateMovement);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(USceneComponent, RelativeLocation, bReplicateMovement);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(USceneComponent, RelativeRotation, bReplicateMovement);
+	DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(USceneComponent, RelativeScale3D, bReplicateMovement);
 }
 
 bool UGrippableSkeletalMeshComponent::ReplicateSubobjects(UActorChannel* Channel, class FOutBunch *Bunch, FReplicationFlags *RepFlags)
 {
 	bool WroteSomething = Super::ReplicateSubobjects(Channel, Bunch, RepFlags);
 
-	if (bReplicateGripScripts)
+	if (bReplicateGripScripts && !IsUsingRegisteredSubObjectList())
 	{
 		for (UVRGripScriptBase* Script : GripLogicScripts)
 		{
-			if (Script && !Script->IsPendingKill())
+			if (Script && IsValid(Script))
 			{
 				WroteSomething |= Channel->ReplicateSubobject(Script, *Bunch, *RepFlags);
 			}
@@ -265,7 +275,7 @@ void UGrippableSkeletalMeshComponent::PreDestroyFromReplication()
 		if (UObject *SubObject = GripLogicScripts[i])
 		{
 			SubObject->PreDestroyFromReplication();
-			SubObject->MarkPendingKill();
+			SubObject->MarkAsGarbage();
 		}
 	}
 
@@ -305,9 +315,78 @@ void UGrippableSkeletalMeshComponent::OnComponentDestroyed(bool bDestroyingHiera
 	{
 		if (UObject *SubObject = GripLogicScripts[i])
 		{
-			SubObject->MarkPendingKill();
+			SubObject->MarkAsGarbage();
 		}
 	}
 
 	GripLogicScripts.Empty();
+}
+
+void UGrippableSkeletalMeshComponent::GetWeldedBodies(TArray<FBodyInstance*>& OutWeldedBodies, TArray<FName>& OutLabels, bool bIncludingAutoWeld)
+{
+	UPhysicsAsset* PhysicsAsset = GetPhysicsAsset();
+
+	for (int32 BodyIdx = 0; BodyIdx < Bodies.Num(); ++BodyIdx)
+	{
+		FBodyInstance* BI = Bodies[BodyIdx];
+		if (BI && (BI->WeldParent != nullptr || (bIncludingAutoWeld && BI->bAutoWeld)))
+		{
+			OutWeldedBodies.Add(BI);
+			if (PhysicsAsset)
+			{
+				if (UBodySetup* PhysicsAssetBodySetup = PhysicsAsset->SkeletalBodySetups[BodyIdx])
+				{
+					OutLabels.Add(PhysicsAssetBodySetup->BoneName);
+				}
+				else
+				{
+					OutLabels.Add(NAME_None);
+				}
+			}
+			else
+			{
+				OutLabels.Add(NAME_None);
+			}
+
+		}
+	}
+
+	for (USceneComponent* Child : GetAttachChildren())
+	{
+		if (UPrimitiveComponent* PrimChild = Cast<UPrimitiveComponent>(Child))
+		{
+			PrimChild->GetWeldedBodies(OutWeldedBodies, OutLabels, bIncludingAutoWeld);
+		}
+	}
+}
+
+FBodyInstance* UGrippableSkeletalMeshComponent::GetBodyInstance(FName BoneName, bool bGetWelded, int32) const
+{
+	UPhysicsAsset* const PhysicsAsset = GetPhysicsAsset();
+	FBodyInstance* BodyInst = NULL;
+
+	if (PhysicsAsset != NULL)
+	{
+		// A name of NAME_None indicates 'root body'
+		if (BoneName == NAME_None)
+		{
+			if (Bodies.IsValidIndex(RootBodyData.BodyIndex))
+			{
+				BodyInst = Bodies[RootBodyData.BodyIndex];
+			}
+		}
+		// otherwise, look for the body
+		else
+		{
+			int32 BodyIndex = PhysicsAsset->FindBodyIndex(BoneName);
+			if (Bodies.IsValidIndex(BodyIndex))
+			{
+				BodyInst = Bodies[BodyIndex];
+			}
+		}
+
+		BodyInst = (bGetWelded && BodyInstance.WeldParent) ? BodyInstance.WeldParent : BodyInst;
+	}
+
+	return BodyInst;
 }

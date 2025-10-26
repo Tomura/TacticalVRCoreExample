@@ -1,7 +1,7 @@
 {
   "FileVersion": 3,
-  "Version": 4.27,
-  "VersionName": "4.27",
+  "Version": 5.3,
+  "VersionName": "5.3",
   "FriendlyName": "VRExpansionPlugin",
   "Description": "Adds several new VR features & components to UE4",
   "Category": "VRExpansion",
@@ -18,7 +18,8 @@
 		"Win64",
 		"Linux",
 		"Android",
-		"HoloLens"
+		"Mac",
+		"IOS"
 	],
   "Modules": [
     {
@@ -32,9 +33,13 @@
 	  "LoadingPhase": "PostEngineInit"
     }
   ],
-  "Plugins": [
+	"Plugins": [
     {
-      "Name": "PhysXVehicles",
+      "Name": "ChaosVehiclesPlugin",
+      "Enabled": true
+    },
+    {
+      "Name": "XRBase",
       "Enabled": true
     }
 	]
